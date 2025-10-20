@@ -1,63 +1,81 @@
-// App.js
 import React, { useEffect, useState } from "react";
-import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom";
 import UserPrsDashboard from "./components/UserPrsDashboard";
 import UserReleasesDashboard from "./components/UserReleasesDashboard";
-import "bootstrap/dist/css/bootstrap.min.css";
-import { Spinner, Container } from "react-bootstrap";
+import ReleaseTagsDashboard from "./components/ReleaseTagsDashboard";
+import axios from "axios";
+import { Navbar, Nav, Container } from "react-bootstrap";
 
 const API_BASE = "http://127.0.0.1:5000/api";
 
-function App() {
-  const [allUsers, setAllUsers] = useState([]);
+const App = () => {
   const [repoList, setRepoList] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [allUsers, setAllUsers] = useState([]);
+  const [allTags, setAllTags] = useState([]);
 
   useEffect(() => {
-    const fetchUsersAndRepos = async () => {
+    const fetchRepos = async () => {
       try {
-        const [usersRes, reposRes] = await Promise.all([
-          fetch(`${API_BASE}/people`),
-          fetch(`${API_BASE}/repos`)
-        ]);
-
-        const usersData = await usersRes.json();
-        const reposData = await reposRes.json();
-
-        if (usersRes.ok && Array.isArray(usersData.people)) setAllUsers(usersData.people);
-        if (reposRes.ok && Array.isArray(reposData.repos)) setRepoList(reposData.repos);
-      } catch (err) {
-        console.error("Failed to fetch users or repos:", err);
-      } finally {
-        setLoading(false);
+        const res = await axios.get(`${API_BASE}/repos`);
+        setRepoList(res.data.repos || []);
+      } catch (error) {
+        console.error("Error fetching repos:", error);
       }
     };
 
-    fetchUsersAndRepos();
-  }, []);
+    const fetchUsers = async () => {
+      try {
+        const res = await axios.get(`${API_BASE}/people`);
+        setAllUsers(res.data.people || []);
+      } catch (error) {
+        console.error("Error fetching users:", error);
+      }
+    };
 
-  if (loading) {
-    return (
-      <Container className="text-center mt-5">
-        <Spinner animation="border" />
-      </Container>
-    );
-  }
+    const fetchTags = async () => {
+      try {
+        const res = await axios.get(`${API_BASE}/all-tags`);
+        setAllTags(res.data.tags || []);
+      } catch (error) {
+        console.error("Error fetching release tags:", error);
+      }
+    };
+
+    fetchRepos();
+    fetchUsers();
+    fetchTags();
+  }, []);
 
   return (
     <Router>
-      <Routes>
-        <Route
-          path="/"
-          element={<UserPrsDashboard allUsers={allUsers} repoList={repoList} />}
-        />
-        <Route
-          path="/releases-dashboard"
-          element={<UserReleasesDashboard allUsers={allUsers} repoList={repoList} />}
-        />
-      </Routes>
+      <Navbar bg="dark" variant="dark" expand="lg">
+        <Container>
+          <Nav className="me-auto">
+            <Nav.Link as={Link} to="/">PRs Dashboard</Nav.Link>
+            <Nav.Link as={Link} to="/releases">Releases Dashboard</Nav.Link>
+            <Nav.Link as={Link} to="/release-tags">Release Tags</Nav.Link>
+          </Nav>
+        </Container>
+      </Navbar>
+
+      <Container className="mt-4">
+        <Routes>
+          <Route 
+            path="/" 
+            element={<UserPrsDashboard repoList={repoList} allUsers={allUsers} />} 
+          />
+          <Route 
+            path="/releases" 
+            element={<UserReleasesDashboard repoList={repoList} allUsers={allUsers} />} 
+          />
+          <Route
+            path="/release-tags"
+            element={<ReleaseTagsDashboard tags={allTags} />}
+          />
+        </Routes>
+      </Container>
     </Router>
   );
-}
+};
 
 export default App;

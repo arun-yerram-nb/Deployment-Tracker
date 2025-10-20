@@ -57,6 +57,33 @@ def get_people():
         users = [u for u in users if search_term in u.lower()]
     return jsonify({"people": users})
 
+
+# ---------- Release tags endpoints ----------
+@app.route("/api/all-tags")
+def all_tags():
+    """
+    Returns all unique release tags across all repos.
+    """
+    releases = asyncio.run(fetch_user_releases("", ""))
+    items = releases.get("items", [])
+    tags = sorted(list({r["tag_name"] for r in items if r.get("tag_name")}))
+    return jsonify({"tags": tags})
+
+@app.route("/api/repos-by-tag")
+def repos_by_tag():
+    """
+    Returns all repos/releases for a specific release tag.
+    """
+    tag = request.args.get("tag", "").strip()
+    if not tag:
+        return jsonify({"error": "tag parameter is required"}), 400
+
+    releases = asyncio.run(fetch_user_releases("", ""))
+    items = releases.get("items", [])
+    filtered = [r for r in items if r.get("tag_name") == tag]
+    return jsonify({"repos": filtered})
+
+
 # ---------- Fetch all PRs ----------
 @app.route("/api/prs/all")
 def get_all_prs():
@@ -218,5 +245,7 @@ def health():
 
 if __name__ == "__main__":
     app.run(debug=True)
+
+
 
 
