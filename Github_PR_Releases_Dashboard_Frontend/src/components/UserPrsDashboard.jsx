@@ -1,14 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Form, Row, Col, Table, Spinner, Pagination } from "react-bootstrap";
+import { Form, Row, Col, Table, Spinner, Pagination, Badge } from "react-bootstrap";
 
 const API_BASE = "http://127.0.0.1:5000/api";
 
 const UserPrsDashboard = () => {
-  const [username, setUsername] = useState(localStorage.getItem("prs_username") || "");
+  const [username, setUsername] = useState( "");
   const [repoSearchTable, setRepoSearchTable] = useState("");
   const [stateSearch, setStateSearch] = useState("");
-  const [fromDate, setFromDate] = useState(localStorage.getItem("prs_fromDate") || "");
-  const [toDate, setToDate] = useState(localStorage.getItem("prs_toDate") || "");
+  const [fromDate, setFromDate] = useState( "");
+  const [toDate, setToDate] = useState("");
 
   const [allPrs, setAllPrs] = useState([]);
   const [filteredPrs, setFilteredPrs] = useState([]);
@@ -207,22 +207,61 @@ const UserPrsDashboard = () => {
                 <th onClick={() => handleSort("repo_name")} style={{ cursor: "pointer" }}>Repo</th>
                 <th onClick={() => handleSort("state")} style={{ cursor: "pointer" }}>State</th>
                 <th onClick={() => handleSort("author")} style={{ cursor: "pointer" }}>Author</th>
+                {/* 🆕 New columns */}
+                <th>Reviewers</th>
+                <th>Approvers</th>
                 <th onClick={() => handleSort("created_at")} style={{ cursor: "pointer" }}>Created At</th>
-                <th>Link</th>
               </tr>
             </thead>
-            <tbody>
-              {displayedPrs.map((p, idx) => (
-                <tr key={p.id || idx}>
-                  <td>{p.title}</td>
-                  <td>{p.repo_name}</td>
-                  <td>{p.state}</td>
-                  <td>{p.author}</td>
-                  <td>{new Date(p.created_at).toLocaleString()}</td>
-                  <td><a href={p.html_url} target="_blank" rel="noreferrer">view</a></td>
-                </tr>
-              ))}
-            </tbody>
+<tbody>
+  {displayedPrs.map((p, idx) => (
+    <tr key={p.id || idx}>
+      {/* ✅ Title as hyperlink */}
+      <td>
+        <a href={p.html_url} target="_blank" rel="noreferrer">
+          {p.title}
+        </a>
+      </td>
+
+      <td>{p.repo_name}</td>
+
+      <td>
+        <Badge bg={
+          p.state === "open" ? "success" :
+          p.state === "merged" ? "primary" : 
+          p.state === "closed" ? "danger" : "secondary"
+        }>
+          {p.state}
+        </Badge>
+      </td>
+
+      <td>{p.author}</td>
+
+      {/* Reviewers */}
+      <td>
+        {p.requested_reviewers?.length ? (
+          p.requested_reviewers.map((r, i) => (
+            <Badge key={i} bg="info" text="dark" className="me-1">{r}</Badge>
+          ))
+        ) : (
+          <span>-</span>
+        )}
+      </td>
+
+      {/* Approvers */}
+      <td>
+        {p.approvers?.length ? (
+          p.approvers.map((r, i) => (
+            <Badge key={i} bg="success" text="light" className="me-1">{r}</Badge>
+          ))
+        ) : (
+          <span>-</span>
+        )}
+      </td>
+      <td>{new Date(p.created_at).toLocaleString()}</td>
+    </tr>
+  ))}
+</tbody>
           </Table>
 
           <Pagination className="justify-content-center">

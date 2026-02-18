@@ -9,36 +9,36 @@ import {
   Pagination,
 } from "react-bootstrap";
 import { useFetcher, useNavigate } from "react-router-dom";
- 
+
 const API_BASE = "http://127.0.0.1:5000/api";
- 
+
 const UserReleasesDashboard = () => {
   const navigate = useNavigate();
- 
+
   const [username, setUsername] = useState(localStorage.getItem("rel_username") || "");
   const [fromDate, setFromDate] = useState(localStorage.getItem("rel_fromDate") || "");
   const [toDate, setToDate] = useState(localStorage.getItem("rel_toDate") || "");
- 
+
   const [tagSearch, setTagSearch] = useState("");
   const [repoSearchTable, setRepoSearchTable] = useState("");
   const [authorSearch, setAuthorSearch] = useState("");
- 
+
   const [allReleases, setAllReleases] = useState([]);
   const [filteredReleases, setFilteredReleases] = useState([]);
   const [displayedReleases, setDisplayedReleases] = useState([]);
- 
+
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
   const perPage = 10;
   const [sortConfig, setSortConfig] = useState({ key: null, direction: "asc" });
- 
+
   // Refs for dropdown detection
   const repoDropdownRef = useRef(null);
   const authorDropdownRef = useRef(null);
- 
+
   const [showRepoDropdown, setShowRepoDropdown] = useState(false);
   const [showAuthorDropdown, setShowAuthorDropdown] = useState(false);
- 
+
   // Close dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -52,7 +52,7 @@ const UserReleasesDashboard = () => {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
-  
+
     useEffect(() => {fetchReleases();},[])
   // -------------------- FETCH RELEASES --------------------
   const fetchReleases = async () => {
@@ -63,7 +63,7 @@ const UserReleasesDashboard = () => {
       const res = await fetch(url);
       const data = await res.json();
       let items = data.items || [];
- 
+
       // Filter by date locally
       if (fromDate || toDate) {
         items = items.filter((r) => {
@@ -74,7 +74,7 @@ const UserReleasesDashboard = () => {
           return valid;
         });
       }
- 
+
       setAllReleases(items);
     } catch (err) {
       console.error(err);
@@ -84,11 +84,11 @@ const UserReleasesDashboard = () => {
       setPage(1);
     }
   };
- 
+
   // -------------------- FILTERING --------------------
   useEffect(() => {
   let data = [...allReleases];
- 
+
   // Tag filter
   if (tagSearch.trim())
     data = data.filter(
@@ -96,25 +96,25 @@ const UserReleasesDashboard = () => {
         (r.tag_name || "").toLowerCase().includes(tagSearch.trim().toLowerCase()) ||
         (r.name || "").toLowerCase().includes(tagSearch.trim().toLowerCase())
     );
- 
+
   // Repo filter
   if (repoSearchTable.trim())
     data = data.filter((r) =>
       (r.repo_name || "").toLowerCase().includes(repoSearchTable.trim().toLowerCase())
     );
- 
+
   // Author filter
   if (authorSearch.trim())
     data = data.filter((r) =>
       (r.author || "").toLowerCase().includes(authorSearch.trim().toLowerCase())
     );
- 
+
   // **Date filter locally**
   if (fromDate)
     data = data.filter((r) => new Date(r.created_at) >= new Date(fromDate));
   if (toDate)
     data = data.filter((r) => new Date(r.created_at) <= new Date(toDate));
- 
+
   // Sorting
   if (sortConfig.key) {
     data.sort((a, b) => {
@@ -132,20 +132,20 @@ const UserReleasesDashboard = () => {
       return 0;
     });
   }
- 
+
   setFilteredReleases(data);
   setDisplayedReleases(data.slice(0, perPage));
   setPage(1);
 }, [allReleases, tagSearch, repoSearchTable, authorSearch, fromDate, toDate, sortConfig]);
- 
- 
+
+
   // -------------------- PAGINATION --------------------
   const handlePageChange = (pageNumber) => {
     setPage(pageNumber);
     const start = (pageNumber - 1) * perPage;
     setDisplayedReleases(filteredReleases.slice(start, start + perPage));
   };
- 
+
   const totalPages = Math.max(1, Math.ceil(filteredReleases.length / perPage));
   const getPageNumbers = () => {
     const maxVisible = 7;
@@ -157,14 +157,14 @@ const UserReleasesDashboard = () => {
     }
     return Array.from({ length: end - start + 1 }, (_, i) => start + i);
   };
- 
+
   // -------------------- SORTING --------------------
   const handleSort = (key) => {
     let direction = "asc";
     if (sortConfig.key === key && sortConfig.direction === "asc") direction = "desc";
     setSortConfig({ key, direction });
   };
- 
+
   return (
     <div className="container mt-4">
       <h2 className="text-center mb-4">GitHub Release Dashboard</h2>
@@ -175,7 +175,7 @@ const UserReleasesDashboard = () => {
         }}
       >
         <Row className="align-items-center">
-           <Col md={3}>
+           <Col md={2}>
             <Form.Control
               placeholder="Filter by Tag"
               value={tagSearch}
@@ -183,7 +183,7 @@ const UserReleasesDashboard = () => {
             />
           </Col>
           {/* Repo autocomplete */}
-          <Col md={3} ref={repoDropdownRef} style={{ position: "relative" }}>
+          <Col md={2} ref={repoDropdownRef} style={{ position: "relative" }}>
             <Form.Control
               placeholder="Filter by Repo"
               value={repoSearchTable}
@@ -218,7 +218,7 @@ const UserReleasesDashboard = () => {
             )}
           </Col>
           {/* Author autocomplete */}
-          <Col md={3} ref={authorDropdownRef} style={{ position: "relative" }}>
+          <Col md={2} ref={authorDropdownRef} style={{ position: "relative" }}>
             <Form.Control
               placeholder="Filter by Author"
               value={authorSearch}
@@ -252,10 +252,7 @@ const UserReleasesDashboard = () => {
               </div>
             )}
           </Col>
-        </Row>
-        
-        <Row className="mt-2">
-            <Col md={2}>
+          <Col md={2}>
             <Form.Control
               type="date"
               value={fromDate}
@@ -273,8 +270,10 @@ const UserReleasesDashboard = () => {
             <Button type="submit">Search</Button>
           </Col>
         </Row>
+
+
       </Form>
- 
+
       {loading ? (
         <div className="text-center py-4">
           <Spinner animation="border" />
@@ -315,7 +314,7 @@ const UserReleasesDashboard = () => {
               ))}
             </tbody>
           </Table>
- 
+
           <Pagination className="justify-content-center">
             <Pagination.First onClick={() => handlePageChange(1)} disabled={page === 1} />
             <Pagination.Prev
@@ -343,5 +342,5 @@ const UserReleasesDashboard = () => {
     </div>
   );
 };
- 
+
 export default UserReleasesDashboard;

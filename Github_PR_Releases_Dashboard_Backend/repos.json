@@ -118,5 +118,10 @@
     "igloo-test-deploy",
     "igloo-transaction-processing-service",
     "igloo-cdc-history-service",
-    "igloo-cde-mc-stip-processor"
+    "igloo-cde-mc-stip-processor",
+    "igloo-management-domain-service",
+    "igloo-settlement-management-service",
+    "igloo-settlement-domain-service",
+    "igloo-txn-statement-service",
+    "igloo-common-grpc-interceptor"
   ]

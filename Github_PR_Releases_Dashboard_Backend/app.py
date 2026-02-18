@@ -38,6 +38,7 @@ async def fetch_all_repos():
         print(f"Error reading repos.json: {e}")
         return []
 
+
 async def fetch_all_users():
     """Reads all users from people.json and returns as a list."""
     try:
@@ -52,8 +53,9 @@ async def fetch_all_users():
         print(f"Error reading people.json: {e}")
         return []
 
+
 async def fetch_prs_for_repo(session, repo, username=None):
-    """Fetch PRs for a single repository using GraphQL."""
+    """Fetch PRs for a single repository using GraphQL, including reviewers & approvers."""
     query = """
     query($owner: String!, $name: String!, $first: Int!) {
       repository(owner: $owner, name: $name) {
@@ -67,6 +69,19 @@ async def fetch_prs_for_repo(session, repo, username=None):
             updatedAt
             mergedAt
             author { login }
+            reviewRequests(first: 50) {
+              nodes {
+                requestedReviewer {
+                  ... on User { login }
+                  ... on Team { name }
+                }
+              }
+            }
+            reviews(first: 50, states: APPROVED) {
+              nodes {
+                author { login }
+              }
+            }
           }
         }
       }
@@ -91,9 +106,25 @@ async def fetch_prs_for_repo(session, repo, username=None):
         author_login = n.get("author", {}).get("login")
         if username and (author_login or "").lower() != username.lower():
             continue
-        state = n.get("state").lower()
+
+        state = n.get("state", "").lower()
         if n.get("mergedAt"):
             state = "merged"
+
+        # Extract requested reviewers
+        requested_reviewers = []
+        for rr in n.get("reviewRequests", {}).get("nodes", []):
+            rv = rr.get("requestedReviewer")
+            if rv:
+                requested_reviewers.append(rv.get("login") or rv.get("name"))
+
+        # Extract approvers (approved reviewers)
+        approvers = []
+        for rev in n.get("reviews", {}).get("nodes", []):
+            auth = rev.get("author", {}).get("login")
+            if auth:
+                approvers.append(auth)
+
         result.append({
             "title": n.get("title"),
             "number": n.get("number"),
@@ -103,9 +134,12 @@ async def fetch_prs_for_repo(session, repo, username=None):
             "updated_at": n.get("updatedAt"),
             "repo_name": repo,
             "repo_owner": ORG_NAME,
-            "author": author_login
+            "author": author_login,
+            "requested_reviewers": requested_reviewers,
+            "approvers": approvers
         })
     return result
+
 
 async def fetch_all_prs(username=None):
     """Fetch PRs for all repositories concurrently."""
@@ -143,6 +177,7 @@ async def fetch_releases(session, repo, username=None):
         print(f"Error fetching releases for {repo}: {e}")
         return []
 
+
 async def fetch_user_releases(username=None, selected_repo=None):
     all_repos = await fetch_all_repos()
     if selected_repo:
@@ -162,10 +197,13 @@ def get_user_prs():
     prs = asyncio.run(fetch_all_prs(username=username))
     return jsonify({"items": prs, "total_count": len(prs)})
 
+
 @app.route("/api/user-releases")
 def get_user_releases():
     username = request.args.get("username", "").strip()
     selected_repo = request.args.get("repo", "").strip()
+    print(f"Fetching releases for user: {username}, repo: {selected_repo}")
+
     try:
         page = int(request.args.get("page", 1))
         per_page = int(request.args.get("per_page", 10))
@@ -185,11 +223,8 @@ def get_user_releases():
         "per_page": per_page
     })
 
-@app.route("/api/health")
-def health():
-    return jsonify({"status": "ok"})
 
-# -------------------- Run Flask --------------------
+
 if __name__ == "__main__":
-    app.run(debug=True)
-
+    app.run(host="0.0.0.0", debug=True)
+ 

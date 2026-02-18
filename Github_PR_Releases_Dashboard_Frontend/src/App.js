@@ -9,43 +9,6 @@ import { Navbar, Nav, Container } from "react-bootstrap";
 const API_BASE = "http://127.0.0.1:5000/api";
 
 const App = () => {
-  // const [repoList, setRepoList] = useState([]);
-  // const [allUsers, setAllUsers] = useState([]);
-  // const [allTags, setAllTags] = useState([]);
-
-  // useEffect(() => {
-    // const fetchRepos = async () => {
-    //   try {
-    //     const res = await axios.get(`${API_BASE}/repos`);
-    //     setRepoList(res.data.repos || []);
-    //   } catch (error) {
-    //     console.error("Error fetching repos:", error);
-    //   }
-    // };
-
-    // const fetchUsers = async () => {
-    //   try {
-    //     const res = await axios.get(`${API_BASE}/people`);
-    //     setAllUsers(res.data.people || []);
-    //   } catch (error) {
-    //     console.error("Error fetching users:", error);
-    //   }
-    // };
-
-    // const fetchTags = async () => {
-    //   try {
-    //     const res = await axios.get(`${API_BASE}/all-tags`);
-    //     setAllTags(res.data.tags || []);
-    //   } catch (error) {
-    //     console.error("Error fetching release tags:", error);
-    //   }
-    // };
-
-    // fetchRepos();
-    // fetchUsers();
-  //   fetchTags();
-  // }, []);
-
   return (
     <Router>
       <Navbar bg="dark" variant="dark" expand="lg">
@@ -60,7 +23,7 @@ const App = () => {
 
       <Container className="mt-4">
         <Routes>
-          <Route 
+          <Route
             path="/" 
             element={<UserPrsDashboard />} 
           />
