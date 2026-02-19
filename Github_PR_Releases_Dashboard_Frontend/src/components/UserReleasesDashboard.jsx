@@ -295,24 +295,28 @@ const UserReleasesDashboard = () => {
                 <th onClick={() => handleSort("created_at")} style={{ cursor: "pointer" }}>
                   Created At
                 </th>
-                <th>Link</th>
+              
               </tr>
             </thead>
             <tbody>
-              {displayedReleases.map((r, idx) => (
-                <tr key={r.id || idx}>
-                  <td>{r.name || r.tag_name}</td>
-                  <td>{r.repo_name}</td>
-                  <td>{r.author}</td>
-                  <td>{new Date(r.created_at).toLocaleString()}</td>
-                  <td>
-                    <a href={r.html_url} target="_blank" rel="noreferrer">
-                      view
-                    </a>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
+  {displayedReleases.map((r, idx) => (
+    <tr key={r.id || idx}>
+
+      {/* 🔗 Title as hyperlink */}
+      <td>
+        <a href={r.html_url} target="_blank" rel="noreferrer">
+          {r.name || r.tag_name}
+        </a>
+      </td>
+
+      <td>{r.repo_name}</td>
+      <td>{r.author}</td>
+      <td>{new Date(r.created_at).toLocaleString()}</td>
+
+    </tr>
+  ))}
+</tbody>
+
           </Table>
 
           <Pagination className="justify-content-center">

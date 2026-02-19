@@ -213,10 +213,12 @@ const UserPrsDashboard = () => {
                 <th onClick={() => handleSort("created_at")} style={{ cursor: "pointer" }}>Created At</th>
               </tr>
             </thead>
-<tbody>
+            
+            <tbody>
   {displayedPrs.map((p, idx) => (
     <tr key={p.id || idx}>
-      {/* ✅ Title as hyperlink */}
+
+      {/* 🔗 Title as hyperlink */}
       <td>
         <a href={p.html_url} target="_blank" rel="noreferrer">
           {p.title}
@@ -237,31 +239,38 @@ const UserPrsDashboard = () => {
 
       <td>{p.author}</td>
 
-      {/* Reviewers */}
+      {/* 🆕 Reviewers */}
       <td>
         {p.requested_reviewers?.length ? (
           p.requested_reviewers.map((r, i) => (
-            <Badge key={i} bg="info" text="dark" className="me-1">{r}</Badge>
+            <Badge key={i} bg="info" text="dark" className="me-1">
+              {r}
+            </Badge>
           ))
         ) : (
           <span>-</span>
         )}
       </td>
 
-      {/* Approvers */}
+      {/* 🆕 Approvers */}
       <td>
         {p.approvers?.length ? (
           p.approvers.map((r, i) => (
-            <Badge key={i} bg="success" text="light" className="me-1">{r}</Badge>
+            <Badge key={i} bg="success" text="light" className="me-1">
+              {r}
+            </Badge>
           ))
         ) : (
           <span>-</span>
         )}
       </td>
+
       <td>{new Date(p.created_at).toLocaleString()}</td>
+
     </tr>
   ))}
 </tbody>
+
           </Table>
 
           <Pagination className="justify-content-center">
@@ -283,3 +292,4 @@ const UserPrsDashboard = () => {
 
 export default UserPrsDashboard;
 
+ 
