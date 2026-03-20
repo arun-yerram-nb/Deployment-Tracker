@@ -8,14 +8,14 @@ import {
   Spinner,
   Pagination,
 } from "react-bootstrap";
-import { useFetcher, useNavigate } from "react-router-dom";
+import { useTheme } from "../ThemeContext";
 
 const API_BASE = "http://127.0.0.1:5000/api";
 
 const UserReleasesDashboard = () => {
-  const navigate = useNavigate();
+  const { darkMode } = useTheme();
 
-  const [username, setUsername] = useState(localStorage.getItem("rel_username") || "");
+  const [username] = useState(localStorage.getItem("rel_username") || "");
   const [fromDate, setFromDate] = useState(localStorage.getItem("rel_fromDate") || "");
   const [toDate, setToDate] = useState(localStorage.getItem("rel_toDate") || "");
 
@@ -165,9 +165,23 @@ const UserReleasesDashboard = () => {
     setSortConfig({ key, direction });
   };
 
+  // Style objects for dark mode
+  const formControlStyle = {
+    backgroundColor: darkMode ? "#1e1e1e" : "#ffffff",
+    color: darkMode ? "#ffffff" : "#000000",
+    borderColor: darkMode ? "#444444" : "#dee2e6",
+  };
+
+  const dropdownStyle = {
+    backgroundColor: darkMode ? "#1e1e1e" : "#ffffff",
+    color: darkMode ? "#ffffff" : "#000000",
+    maxHeight: 150,
+    overflowY: "auto",
+  };
+
   return (
-    <div className="container mt-4">
-      <h2 className="text-center mb-4">GitHub Release Dashboard</h2>
+    <div className="container mt-4" style={{ backgroundColor: darkMode ? "#121212" : "#ffffff" }}>
+      <h2 className="text-center mb-4" style={{ color: darkMode ? "#ffffff" : "#000000" }}>GitHub Release Dashboard</h2>
       <Form
         onSubmit={(e) => {
           e.preventDefault();
@@ -175,11 +189,12 @@ const UserReleasesDashboard = () => {
         }}
       >
         <Row className="align-items-center">
-           <Col md={2}>
+          <Col md={2}>
             <Form.Control
               placeholder="Filter by Tag"
               value={tagSearch}
               onChange={(e) => setTagSearch(e.target.value)}
+              style={formControlStyle}
             />
           </Col>
           {/* Repo autocomplete */}
@@ -192,12 +207,10 @@ const UserReleasesDashboard = () => {
                 setShowRepoDropdown(true);
               }}
               onFocus={() => setShowRepoDropdown(true)}
+              style={formControlStyle}
             />
             {showRepoDropdown && (
-              <div
-                className="dropdown-menu show w-100"
-                style={{ maxHeight: 150, overflowY: "auto" }}
-              >
+              <div style={dropdownStyle}>
                 {Array.from(new Set(allReleases.map((r) => r.repo_name)))
                   .filter((name) =>
                     name.toLowerCase().includes(repoSearchTable.toLowerCase())
@@ -205,11 +218,20 @@ const UserReleasesDashboard = () => {
                   .map((name, idx) => (
                     <div
                       key={idx}
+                      role="button"
+                      tabIndex={0}
                       className="dropdown-item"
                       onClick={() => {
                         setRepoSearchTable(name);
                         setShowRepoDropdown(false);
                       }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          setRepoSearchTable(name);
+                          setShowRepoDropdown(false);
+                        }
+                      }}
+                      style={{ ...dropdownStyle, cursor: "pointer" }}
                     >
                       {name}
                     </div>
@@ -227,12 +249,10 @@ const UserReleasesDashboard = () => {
                 setShowAuthorDropdown(true);
               }}
               onFocus={() => setShowAuthorDropdown(true)}
+              style={formControlStyle}
             />
             {showAuthorDropdown && (
-              <div
-                className="dropdown-menu show w-100"
-                style={{ maxHeight: 150, overflowY: "auto" }}
-              >
+              <div style={dropdownStyle}>
                 {Array.from(new Set(allReleases.map((r) => r.author)))
                   .filter((name) =>
                     name.toLowerCase().includes(authorSearch.toLowerCase())
@@ -240,11 +260,20 @@ const UserReleasesDashboard = () => {
                   .map((name, idx) => (
                     <div
                       key={idx}
+                      role="button"
+                      tabIndex={0}
                       className="dropdown-item"
                       onClick={() => {
                         setAuthorSearch(name);
                         setShowAuthorDropdown(false);
                       }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          setAuthorSearch(name);
+                          setShowAuthorDropdown(false);
+                        }
+                      }}
+                      style={{ ...dropdownStyle, cursor: "pointer" }}
                     >
                       {name}
                     </div>
@@ -257,6 +286,7 @@ const UserReleasesDashboard = () => {
               type="date"
               value={fromDate}
               onChange={(e) => setFromDate(e.target.value)}
+              style={formControlStyle}
             />
           </Col>
           <Col md={2}>
@@ -264,10 +294,11 @@ const UserReleasesDashboard = () => {
               type="date"
               value={toDate}
               onChange={(e) => setToDate(e.target.value)}
+              style={formControlStyle}
             />
           </Col>
           <Col md="auto">
-            <Button type="submit">Search</Button>
+            <Button type="submit" style={{ backgroundColor: darkMode ? "#61dafb" : "#007bff", borderColor: darkMode ? "#61dafb" : "#007bff", color: darkMode ? "#000000" : "#ffffff" }}>Search</Button>
           </Col>
         </Row>
 
@@ -275,44 +306,58 @@ const UserReleasesDashboard = () => {
       </Form>
 
       {loading ? (
-        <div className="text-center py-4">
-          <Spinner animation="border" />
+        <div className="text-center py-4" style={{ color: darkMode ? "#ffffff" : "#000000" }}>
+          <Spinner animation="border" style={{ color: darkMode ? "#61dafb" : "#007bff" }} />
         </div>
       ) : displayedReleases.length ? (
         <>
-          <Table striped bordered hover responsive className="mt-3">
-            <thead className="table-dark">
-              <tr>
-                <th onClick={() => handleSort("name")} style={{ cursor: "pointer" }}>
+          <Table 
+            striped 
+            bordered 
+            hover 
+            responsive 
+            className={`mt-3 ${darkMode ? "table-dark" : "table-light"}`}
+            style={{
+              backgroundColor: darkMode ? "#1e1e1e" : "#ffffff",
+              color: darkMode ? "#ffffff" : "#000000"
+            }}
+          >
+            <thead className={darkMode ? "table-dark" : "table-light"} style={{ backgroundColor: darkMode ? "#121212" : "#f8f9fa" }}>
+              <tr style={{ color: darkMode ? "#ffffff" : "#000000" }}>
+                <th onClick={() => handleSort("name")} style={{ cursor: "pointer", color: darkMode ? "#ffffff" : "#000000" }}>
                   Name / Tag
                 </th>
-                <th onClick={() => handleSort("repo_name")} style={{ cursor: "pointer" }}>
+                <th onClick={() => handleSort("repo_name")} style={{ cursor: "pointer", color: darkMode ? "#ffffff" : "#000000" }}>
                   Repo
                 </th>
-                <th onClick={() => handleSort("author")} style={{ cursor: "pointer" }}>
+                <th onClick={() => handleSort("author")} style={{ cursor: "pointer", color: darkMode ? "#ffffff" : "#000000" }}>
                   Author
                 </th>
-                <th onClick={() => handleSort("created_at")} style={{ cursor: "pointer" }}>
+                <th onClick={() => handleSort("created_at")} style={{ cursor: "pointer", color: darkMode ? "#ffffff" : "#000000" }}>
                   Created At
                 </th>
-                <th>Link</th>
+              
               </tr>
             </thead>
             <tbody>
-              {displayedReleases.map((r, idx) => (
-                <tr key={r.id || idx}>
-                  <td>{r.name || r.tag_name}</td>
-                  <td>{r.repo_name}</td>
-                  <td>{r.author}</td>
-                  <td>{new Date(r.created_at).toLocaleString()}</td>
-                  <td>
-                    <a href={r.html_url} target="_blank" rel="noreferrer">
-                      view
-                    </a>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
+  {displayedReleases.map((r) => (
+    <tr key={r.id || r.tag_name} style={{ backgroundColor: darkMode ? "#1e1e1e" : "#ffffff", color: darkMode ? "#ffffff" : "#000000" }}>
+
+      {/* 🔗 Title as hyperlink */}
+      <td style={{ color: darkMode ? "#61dafb" : "#007bff" }}>
+        <a href={r.html_url} target="_blank" rel="noreferrer" style={{ color: darkMode ? "#61dafb" : "#007bff", textDecoration: "none" }}>
+          {r.name || r.tag_name}
+        </a>
+      </td>
+
+      <td style={{ color: darkMode ? "#ffffff" : "#000000" }}>{r.repo_name}</td>
+      <td style={{ color: darkMode ? "#ffffff" : "#000000" }}>{r.author}</td>
+      <td style={{ color: darkMode ? "#ffffff" : "#000000" }}>{new Date(r.created_at).toLocaleString()}</td>
+
+    </tr>
+  ))}
+</tbody>
+
           </Table>
 
           <Pagination className="justify-content-center">
@@ -321,11 +366,15 @@ const UserReleasesDashboard = () => {
               onClick={() => handlePageChange(Math.max(1, page - 1))}
               disabled={page === 1}
             />
-            {getPageNumbers().map((p) => (
-              <Pagination.Item key={p} active={p === page} onClick={() => handlePageChange(p)}>
-                {p}
-              </Pagination.Item>
-            ))}
+            {getPageNumbers().map((p) => {
+              const isActive = p === page;
+              const paginationBgColor = isActive ? (darkMode ? "#61dafb" : "#007bff") : "transparent";
+              return (
+                <Pagination.Item key={p} active={isActive} onClick={() => handlePageChange(p)} style={{ backgroundColor: paginationBgColor, color: darkMode ? "#ffffff" : "#000000" }}>
+                  {p}
+                </Pagination.Item>
+              );
+            })}
             <Pagination.Next
               onClick={() => handlePageChange(Math.min(totalPages, page + 1))}
               disabled={page === totalPages}
@@ -337,7 +386,7 @@ const UserReleasesDashboard = () => {
           </Pagination>
         </>
       ) : (
-        <div className="text-center py-4">No releases found</div>
+        <div className="text-center py-4" style={{ color: darkMode ? "#ffffff" : "#000000" }}>No releases found</div>
       )}
     </div>
   );

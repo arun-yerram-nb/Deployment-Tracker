@@ -123,5 +123,16 @@
     "igloo-settlement-management-service",
     "igloo-settlement-domain-service",
     "igloo-txn-statement-service",
-    "igloo-common-grpc-interceptor"
+    "igloo-common-grpc-interceptor",
+    "igloo-istio-routing",
+    "igloo-cde-portfolio-auth-service",
+    "igloo-cde-card-portfolio-etl",
+    "igloo_migation_reconn_poc",
+    "igloo-balance-loading-etl",
+    "igloo-migration-recontesting",
+    "igloo-transaction-load-etl",
+    "igloo-migration-load-etl",
+    "igloo-cdh-dbs",
+    "igloo-cdh-service",
+    "igloo-cde-card-integration-service"
   ]
