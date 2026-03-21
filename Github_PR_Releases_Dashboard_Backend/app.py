@@ -9,6 +9,9 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 import nest_asyncio
 
+# 1595
+# 6837
+
 # =========================================================
 # 🔹 Environment Setup
 # =========================================================
@@ -243,7 +246,7 @@ async def fetch_all_prs(username=None):
 # 🔹 Releases Logic
 # =========================================================
 
-async def fetch_releases_per_repo(session, repo, username=None):
+async def fetch_releases_per_repo(session, repo):
     """
     Fetch releases for a repository using GitHub REST API.
     """
@@ -266,9 +269,6 @@ async def fetch_releases_per_repo(session, repo, username=None):
                     "html_url": rel.get("html_url"),
                     "created_at": rel.get("created_at"),
                 }
-                for rel in data
-                if not username or
-                rel.get("author", {}).get("login", "").lower() == username.lower()
             ]
 
     except Exception as e:
@@ -276,25 +276,20 @@ async def fetch_releases_per_repo(session, repo, username=None):
         return []
 
 
-async def fetch_all_releases(username=None, selected_repo=None):
+async def fetch_all_releases(selected_repo=None):
     """
     Fetch releases across repositories with optional filtering.
     """
     repos = await fetch_all_repos()
 
-    # Filter by repo if provided
-    if selected_repo:
-        repos = [selected_repo] if selected_repo in repos else []
-
     async with aiohttp.ClientSession(headers=HEADERS) as session:
-        tasks = [fetch_releases_per_repo(session, repo, username) for repo in repos]
+        tasks = [fetch_releases_per_repo(session, repo) for repo in repos]
         results = await asyncio.gather(*tasks)
 
         releases = [r for sub in results for r in sub]
         releases.sort(key=lambda r: r.get("created_at") or "", reverse=True)
 
         return releases
-
 
 # =========================================================
 # 🔹 API Endpoints
@@ -317,34 +312,19 @@ def get_user_prs():
 @app.route("/api/user-releases")
 def get_user_releases():
     """
-    Get releases for a user with pagination.
+    Get releases for a user.
     """
-    username = request.args.get("username", "").strip() or None
+    # username = request.args.get("username", "").strip() or None
     repo = request.args.get("repo", "").strip() or None
 
-    # Pagination handling
     try:
-        page = int(request.args.get("page", 1))
-        per_page = int(request.args.get("per_page", 10))
-    except ValueError:
-        return jsonify({"error": "Invalid pagination"}), 400
-
-    try:
-        releases = run_async(fetch_all_releases(username, repo))
+        releases = run_async(fetch_all_releases(repo))
+        return jsonify({
+            "items": releases,
+            "total_count": len(releases)
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-    total = len(releases)
-    start = (page - 1) * per_page
-    end = start + per_page
-
-    return jsonify({
-        "items": releases[start:end],
-        "total_count": total,
-        "page": page,
-        "per_page": per_page,
-    })
-
 
 # =========================================================
 # 🔹 Entry Point (Production Ready)
