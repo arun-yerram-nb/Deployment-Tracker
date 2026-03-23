@@ -88,9 +88,9 @@ const UserReleasesDashboard = () => {
     useEffect(() => {
       let data = [...allReleases];
 
-      if (tagSearch.trim())data = data.filter((r) => (r.tag_name || "").toLowerCase().includes(tagSearch.trim().toLowerCase()));
       if (repoSearchTable.trim())data = data.filter((r) => (r.repo_name || "").toLowerCase().includes(repoSearchTable.trim().toLowerCase()));
       if (username.trim())data = data.filter((r) => (r.author || "").toLowerCase().includes(username.trim().toLowerCase()));
+      if (tagSearch.trim())data = data.filter((r) => (r.tag_name || "").toLowerCase().includes(tagSearch.trim().toLowerCase()));
       if (fromDate)data = data.filter((r) => new Date(r.created_at) >= new Date(fromDate));
       if (toDate)data = data.filter((r) => new Date(r.created_at) <= new Date(toDate));
 
@@ -163,7 +163,7 @@ const UserReleasesDashboard = () => {
             <Form.Control
               placeholder="Filter by Username"
               value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              onChange={(e) => {setUsername(e.target.value); setShowUserDropdown(true); }}
               onFocus={() => setShowUserDropdown(true)}
               style={formControlStyle}
             />
@@ -215,7 +215,7 @@ const UserReleasesDashboard = () => {
             <Form.Control
               placeholder="Filter by Tag"
               value={tagSearch}
-              onChange={(e) => setTagSearch(e.target.value)}
+              onChange={(e) => {setTagSearch(e.target.value); setShowTagDropdown(true); }}
               onFocus={() => setShowTagDropdown(true)}
               style={formControlStyle}
             />
@@ -259,6 +259,7 @@ const UserReleasesDashboard = () => {
           </Col>
         </Row>
       </Form>
+      
 
       {loading ? (
         <div className="text-center py-4" style={{ color: darkMode ? "#ffffff" : "#000000" }}>

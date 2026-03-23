@@ -88,7 +88,11 @@ const UserPrsDashboard = () => {
         if (sortConfig.key === "created_at") {
           valA = new Date(valA).getTime();
           valB = new Date(valB).getTime();
-        } else {
+        }
+        else if (sortConfig.key === "pr_age_days") {
+      valA = valA ?? 0;
+      valB = valB ?? 0;} 
+        else {
           valA = valA.toString().toLowerCase();
           valB = valB.toString().toLowerCase();
         }
@@ -151,7 +155,7 @@ const UserPrsDashboard = () => {
             <Form.Control
               placeholder="Filter by Username"
               value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              onChange={(e) => { setUsername(e.target.value); setShowUserDropdown(true); }}
               onFocus={() => setShowUserDropdown(true)}
               style={formControlStyle}
             />
@@ -203,7 +207,7 @@ const UserPrsDashboard = () => {
             <Form.Control
               placeholder="Filter by State"
               value={stateSearch}
-              onChange={(e) => setStateSearch(e.target.value)}
+              onChange={(e) => {setStateSearch(e.target.value); setShowStateDropdown(true); }}
               onFocus={() => setShowStateDropdown(true)}
               style={formControlStyle}
             />
@@ -262,6 +266,8 @@ const UserPrsDashboard = () => {
                 <th>Approvers</th>
                  <th>Jira</th>
                 <th onClick={() => handleSort("created_at")} style={{ cursor: "pointer" }}>Created At</th>
+                {/* <th onClick={() => handleSort("age_days")} style={{ cursor: "pointer" }}>Age (days)</th> */}
+                <th onClick={() => handleSort("pr_age_days")} style={{ cursor: "pointer" }}>Age (days)</th>
               </tr>
             </thead>
 
@@ -333,6 +339,23 @@ const UserPrsDashboard = () => {
                   <td style={{ color: darkMode ? "#ffffff" : "#000000" }}>
                     {new Date(p.created_at).toLocaleString()}
                   </td>
+
+                  {/* <td style={{ color: darkMode ? "#ffffff" : "#000000" }}>
+                    {(p.age_days)}
+                  </td> */}
+
+                         <td>
+  {p.pr_age_days !== null && p.pr_age_days !== undefined ? (
+    <Badge bg={
+      p.pr_age_days <= 7 ? "success" :
+      p.pr_age_days <= 14 ? "warning" :
+      "danger"
+    }>
+      {p.pr_age_days}
+    </Badge>
+  ) : "-"}
+</td>
+ 
 
                 </tr>
               ))}
