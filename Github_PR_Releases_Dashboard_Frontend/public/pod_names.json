@@ -1,0 +1,58 @@
+{
+  "Ledger service": [
+    "igloo-ledger-service",
+    "igloo-ledger-query-service",
+    "igloo-ods-query-service",
+    "igloo-transaction-logger-service",
+    "igloo-event-logger-service",
+    "igloo-ods-logger-service",
+    "igloo-transaction-sweep-jobs"
+  ],
+  "Auth Engine": [
+    "igloo-adjudication-service",
+    "igloo-auth-engine-service",
+    "igloo-fraud-score-engine-service",
+    "igloo-transaction-integrity-service",
+    "igloo-txn-fraud-analyzer-service",
+    "igloo-utm-service",
+    "igloo-velocity-check-service"
+  ],
+  "Management services": [
+    "igloo-benefits-management-service",
+    "igloo-cde-card-management-service",
+    "igloo-non-cde-card-management-service",
+    "igloo-member-plan-management-service",
+    "igloo-settlement-domain-service",
+    "igloo-txn-statement-service",
+    "igloo-settlement-management-service",
+    "igloo-management-service",
+    "igloo-ods-query-service"
+  ],
+  "bulk utility": [
+    "igloo-bulk-utility-service",
+    "igloo-bulk-utility-ingress",
+    "igloo-bulk-utility-automation",
+    "igloo-bulk-utility-databricks-db-migration-management"
+  ],
+  "Card services": [
+    "igloo-cde-card-generator-service",
+    "igloo-cde-card-service",
+    "igloo-cde-hsm-connector-service",
+    "igloo-cde-card-auth-service",
+    "igloo-cde-hsm-proxy-service",
+    "igloo-cde-ticket-service",
+    "igloo-cde-tracksafe-service"
+  ],
+  "Network interface": [
+    "igloo-cde-auth-engine-stip-service",
+    "igloo-cde-card-cache-service",
+    "igloo-cde-data-element-validator",
+    "igloo-cde-file-upload-simulator",
+    "igloo-cde-iso8583-parser",
+    "igloo-cde-mc-stip-processor",
+    "igloo-cde-network-adapter-service",
+    "igloo-cde-network-management-service",
+    "igloo-cde-pci-event-hub-publisher",
+    "igloo-cde-pci-event-logger-service"
+  ]
+}
