@@ -15,7 +15,8 @@
     "igloo-transaction-integrity-service",
     "igloo-txn-fraud-analyzer-service",
     "igloo-utm-service",
-    "igloo-velocity-check-service"
+    "igloo-velocity-check-service",
+    "igloo-transaction-logger-service"
   ],
   "Management services": [
     "igloo-benefits-management-service",
@@ -41,7 +42,15 @@
     "igloo-cde-card-auth-service",
     "igloo-cde-hsm-proxy-service",
     "igloo-cde-ticket-service",
-    "igloo-cde-tracksafe-service"
+    "igloo-cde-tracksafe-service",
+    "igloo-cde-card-master-service",
+    "igloo-cde-card-management-service",
+    "igloo-cde-card-cache-service",
+    "igloo-cde-card-writer-service",
+    "igloo-cde-flat-file-processor",
+    "igloo-cde-xml-aggregator",
+    "igloo-cde-card-integration-service",
+    "igloo-cde-card-assignment-service"
   ],
   "Network interface": [
     "igloo-cde-auth-engine-stip-service",
@@ -54,5 +63,50 @@
     "igloo-cde-network-management-service",
     "igloo-cde-pci-event-hub-publisher",
     "igloo-cde-pci-event-logger-service"
+  ],
+  "Settlement and Recon Service":[
+    "igloo-reconciliation-service",
+    "igloo-cde-settlements-doc-parser",
+    "gloo-cde-nex-doc-parser-invoker-func",
+    "igloo-cde-nex-doc-copier-func"
+  ],
+
+  "IGLOO ADMIN": [
+    "igloo-admin-portal-ui",
+    "igloo-admin-portal-service",
+    "igloo-admin-ui-automation"
+  ],
+  "FLYWAY":[
+    "igloo-common-db-migration-management",
+    "igloo-common-ods-db-migration-management",
+    "igloo-bulk-utility-databricks-db-migration-management"
+  ],
+  "Common services":[
+    "igloo-common-base-bom",
+    "igloo-common-event-publisher",
+    "igloo-common-grpc-service-bom",
+    "igloo-common-ods-db-migration-management",
+    "igloo-common-protobuf",
+    "igloo-common-secret-management",
+    "igloo-common-service-bom",
+    "igloo-common-rest-service-bom",
+    "igloo-grpc-health-core",
+    "igloo-common-domain-objects",
+    "igloo-common-observability",
+    "igloo-common-db-migration-management",
+    "igloo-common-rest-service-bom",
+    "igloo-common-event-subscriber",
+    "igloo-common-utils",
+    "igloo-common-test-utilities",
+    "igloo-common-event-service-bom"
+  ],
+  "IGLOO Configuration Service": [
+    "igloo-helm"
+  ],
+  "IGLOO Devops":[
+    "igloo-mountebank-mock-service",
+    "igloo-infra",
+    "igloo-prod-service-deployment",
+    "igloo-bootstrap-pipeline"
   ]
 }

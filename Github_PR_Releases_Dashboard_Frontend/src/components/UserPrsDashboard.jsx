@@ -466,7 +466,7 @@ const UserPrsDashboard = () => {
       {/* Title row with View Report button */}
       <div className="d-flex justify-content-between align-items-center mb-4">
         <h2 style={{ color: darkMode ? "#ffffff" : "#000000", margin: 0 }}>
-          GitHub Pull Request Dashboard
+          GitHub Pull Request Catalog
         </h2>
         <Button
           variant="primary"
