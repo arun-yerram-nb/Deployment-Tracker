@@ -108,5 +108,9 @@
     "igloo-infra",
     "igloo-prod-service-deployment",
     "igloo-bootstrap-pipeline"
+  ],
+  "IGLOO Migration":[
+    "igloo-migration-recontesting",
+    "igloo-migration-load-etl"
   ]
 }
