@@ -1,0 +1,1583 @@
+AccountCreate RPC:
+
+├─────┼────────────────────────────┼─────────────────────────────┼────────────────────────────┼────────────────────────────────────────────────────┤																	
+│ 1   │ igl_acct                   │ INSERT                      │ 1                          │ insertAccountAndReturnId :620                      │																	
+├─────┼────────────────────────────┼─────────────────────────────┼────────────────────────────┼────────────────────────────────────────────────────┤																	
+│ 2   │ igl_acct_ref               │ INSERT                      │ 1                          │ insertAccountRef :689                              │																	
+├─────┼────────────────────────────┼─────────────────────────────┼────────────────────────────┼────────────────────────────────────────────────────┤																	
+│ 3   │ igl_sub_acct               │ INSERT                      │ N (one multi-row stmt)     │ insertSubAccountsAndReturnIds :773                 │																	
+├─────┼────────────────────────────┼─────────────────────────────┼────────────────────────────┼────────────────────────────────────────────────────┤																	
+│ 4   │ igl_tranche_tranche_id_seq │ sequence advance            │ M values                   │ preAllocateTrancheIds :1167                        │																	
+├─────┼────────────────────────────┼─────────────────────────────┼────────────────────────────┼────────────────────────────────────────────────────┤																	
+│ 5   │ igl_tranche                │ INSERT                      │ M (JDBC batch)             │ insertTranchesBatch :1053                          │																	
+├─────┼────────────────────────────┼─────────────────────────────┼────────────────────────────┼────────────────────────────────────────────────────┤																	
+│ 6   │ igl_tranche_psn            │ UPSERT (UPDATE-then-INSERT) │ M × psn codes              │ trancheRepository.upsertTrancheExtendedParams :406 │																	
+├─────┼────────────────────────────┼─────────────────────────────┼────────────────────────────┼────────────────────────────────────────────────────┤																	
+│ 7   │ igl_txn_bridge_to_journal  │ INSERT                      │ M (one multi-row stmt)     │ insertBridgeBatch :1076                            │																	
+├─────┼────────────────────────────┼─────────────────────────────┼────────────────────────────┼────────────────────────────────────────────────────┤																	
+│ 8   │ igl_posting_journal        │ INSERT                      │ P + C (one multi-row stmt) │ insertPostingJournalBatch :1100                    │																	
+└─────┴────────────────────────────┴─────────────────────────────┴────────────────────────────┴────────────────────────────────────────────────────┘																	
+
+
+Where:
+- N = number of sub-accounts in the request
+- M = total tranches across all sub-accounts
+- P = tranches with authorizedAmount > 0 (the CREDIT legs)
+- C = distinct currencies among those tranches (the aggregated sweep DEBIT legs — one per currency, not one per tranche)
+
+
+
+
+
+AccountUpdate RPC:
+
+Tables impacted
+
+Written
+
+┌─────┬─────────────────┬────────┬───────────────────────────────────────────────────┬──────┬─────────────────────────────────────────┐
+│  #  │      Table      │   Op   │                      Columns                      │ Rows │                Statement                │
+├─────┼─────────────────┼────────┼───────────────────────────────────────────────────┼──────┼─────────────────────────────────────────┤
+│ 1   │ igl_acct        │ UPDATE │ partition_num, updt_dt, updt_by                   │ 1    │ updateAccountBatch (db-queries.yml:127) │
+├─────┼─────────────────┼────────┼───────────────────────────────────────────────────┼──────┼─────────────────────────────────────────┤
+│ 2   │ igl_sub_acct    │ UPDATE │ partition_num, updt_dt, updt_by                   │ N    │ same batch                              │
+├─────┼─────────────────┼────────┼───────────────────────────────────────────────────┼──────┼─────────────────────────────────────────┤
+│ 3   │ igl_acct_ref    │ UPDATE │ partition_num, updt_dt, updt_by                   │ 1    │ same batch                              │
+├─────┼─────────────────┼────────┼───────────────────────────────────────────────────┼──────┼─────────────────────────────────────────┤
+│ 4   │ igl_tranche     │ UPDATE │ partition_num, updt_dt, updt_by, right_to_upd_key │ M    │ updateTranchesByTrancheId (:597)        │
+├─────┼─────────────────┼────────┼───────────────────────────────────────────────────┼──────┼─────────────────────────────────────────┤
+│ 5   │ igl_tranche_psn │ UPDATE │ partition_num, updt_dt, updt_by                   │ M×   │ same statement, 2nd half                │
+└─────┴─────────────────┴────────┴───────────────────────────────────────────────────┴──────┴─────────────────────────────────────────┘
+
+Steps 1-3 are one multi-statement round trip: resolve acct_id from igl_acct_ref into a table variable, then update igl_acct → igl_sub_acct → igl_acct_ref, then SELECT acct_id. Empty result → ResourceNotFoundException(LEDGER_INVALID_CARD_HOLDER_ACCOUNT_ID).
+
+Steps 4-5 go through trancheRepository.updateTranchesPartitionBatch (TrancheRepository:264) as a JDBC batch, guarded by if (!tranches.isEmpty()) at :1476. See the finding below — in production this guard is never satisfied.
+
+
+
+
+AccountDelete RPC:
+
+
+Tables impacted
+
+Written
+
+┌─────┬───────────────────────────┬────────┬──────────────────────────────────────────────────┬──────┬────────────────────────────────────────────────┐
+│  #  │           Table           │   Op   │                   Columns set                    │ Rows │                   Statement                    │
+├─────┼───────────────────────────┼────────┼──────────────────────────────────────────────────┼──────┼────────────────────────────────────────────────┤
+│ 1   │ igl_acct                  │ UPDATE │ is_soft_del = 1, updt_by, updt_dt                │ 1    │ deleteAccountAndSubaccounts                    │
+│     │                           │        │                                                  │      │ (db-queries.yml:188)                           │
+├─────┼───────────────────────────┼────────┼──────────────────────────────────────────────────┼──────┼────────────────────────────────────────────────┤
+│ 2   │ igl_sub_acct              │ UPDATE │ is_soft_del = 1, updt_by, updt_dt                │ N    │ same batch                                     │
+├─────┼───────────────────────────┼────────┼──────────────────────────────────────────────────┼──────┼────────────────────────────────────────────────┤
+│ 3   │ igl_acct_ref              │ UPDATE │ is_soft_del = 1, updt_by, updt_dt                │ 1    │ same batch                                     │
+├─────┼───────────────────────────┼────────┼──────────────────────────────────────────────────┼──────┼────────────────────────────────────────────────┤
+│ 4   │ igl_tranche               │ UPDATE │ is_soft_del = 1, updt_by, updt_dt,               │ M    │ deleteTranchesAndBridgeReferences (:168)       │
+│     │                           │        │ right_to_upd_key                                 │      │                                                │
+├─────┼───────────────────────────┼────────┼──────────────────────────────────────────────────┼──────┼────────────────────────────────────────────────┤
+│ 5   │ igl_txn_bridge_to_journal │ UPDATE │ is_soft_del = 1, updt_by, updt_dt                │ M    │ same statement, 2nd half                       │
+└─────┴───────────────────────────┴────────┴──────────────────────────────────────────────────┴──────┴────────────────────────────────────────────────
+
+
+Steps 1-3 are one multi-statement round trip: resolve @acct_id / @partition_num from igl_acct_ref, soft-delete igl_acct with OUTPUT inserted.acct_id, soft-delete igl_sub_acct, soft-delete igl_acct_ref, then SELECT the captured id. Empty → ResourceNotFoundException.
+
+Steps 4-5 run as a JDBC batch (TrancheRepository:417), one iteration per tranche, matched on tranche_id + partition_num for the tranche and on acct_id = trancheId AND acct_typ_cd = FUNDING_CD for the bridge row.
+
+
+
+
+All three flows side by side
+
+┌───────────────────────────┬─────────────────────────────────────┬──────────────────────────────────────────┬───────────────────────────┐
+│                           │               Create                │                  Update                  │          Delete           │
+├───────────────────────────┼─────────────────────────────────────┼──────────────────────────────────────────┼───────────────────────────┤
+│ Tables written            │ 8 (7 tables + sequence)             │ 5 (3 reached, 2 not — see prior finding) │ 5                         │
+├───────────────────────────┼─────────────────────────────────────┼──────────────────────────────────────────┼───────────────────────────┤
+│ igl_posting_journal       │ INSERT P+C                          │ —                                        │ —                         │
+├───────────────────────────┼─────────────────────────────────────┼──────────────────────────────────────────┼───────────────────────────┤
+│ igl_txn_bridge_to_journal │ INSERT M                            │ —                                        │ UPDATE M (soft del)       │
+├───────────────────────────┼─────────────────────────────────────┼──────────────────────────────────────────┼───────────────────────────┤
+│ igl_tranche_psn           │ UPSERT                              │ intended UPDATE                          │ not touched               │
+├───────────────────────────┼─────────────────────────────────────┼──────────────────────────────────────────┼───────────────────────────┤
+│ Business events           │ 4 lifecycle + N funding             │ 4 lifecycle                              │ 4 lifecycle               │
+├───────────────────────────┼─────────────────────────────────────┼──────────────────────────────────────────┼───────────────────────────┤
+│ ODS events                │ 6 (INSERT)                          │ 4 (UPDATE)                               │ 5 (DELETE)                │
+├───────────────────────────┼─────────────────────────────────────┼──────────────────────────────────────────┼───────────────────────────┤
+│ STIP cache (Service Bus)  │ yes                                 │ no                                       │ no                        │
+├───────────────────────────┼─────────────────────────────────────┼──────────────────────────────────────────┼───────────────────────────┤
+│ Reference-data lookups    │ 4 (purse, channel, txn type, sweep) │ none                                     │ none                      │
+├───────────────────────────┼─────────────────────────────────────┼──────────────────────────────────────────┼───────────────────────────┤
+│ Business guard            │ duplicate cardHolderAccountId       │ none                                     │ memo hold                 │
+├───────────────────────────┼─────────────────────────────────────┼──────────────────────────────────────────┼───────────────────────────┤
+│ Read/write order          │ write-only                          │ write then read (defective)              │ read then write (correct) │
+└───────────────────────────┴─────────────────────────────────────┴──────────────────────────────────────────┴───────────────────────────┘
+
+
+
+
+
+
+
+CreateSubAccount  RPC:
+
+Two modes, driven by request.getForceCreate():
+
+┌───────────────────┬────────────────────────────────────┬────────────────────────────────────────────────────────────────────────────────────────────┐
+│       Mode        │             Condition              │                                         Behaviour                                          │
+├───────────────────┼────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Normal create     │ forceCreate = false, purse not     │ INSERT new igl_sub_acct row + its tranches. Status SUB_ACCOUNT_CREATED                     │
+│                   │ already on the account             │                                                                                            │
+├───────────────────┼────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Force-create      │ forceCreate = true, purse already  │ Reuse the existing sub_acct_id, insert only tranches. Status TRANCHE_CREATED_SUCCESSFULLY, │
+│ existing          │ exists                             │  and the sub-account ODS event is skipped (:289)                                           │
+└───────────────────┴────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────────────────┘
+
+(forceCreate = true with a purse that doesn't yet exist behaves like a normal create.)
+
+
+
+Tables impacted
+
+Written
+
+┌─────┬────────────────────────────┬──────────────────┬──────────────────────────────────────┬────────────────────────────────────────────────────┐
+│  #  │           Table            │        Op        │                 Rows                 │                       Where                        │
+├─────┼────────────────────────────┼──────────────────┼──────────────────────────────────────┼────────────────────────────────────────────────────┤
+│ 1   │ igl_sub_acct               │ INSERT           │ 1 — skipped in force-create-existing │ insertSubAccountAndReturnId :969                   │
+├─────┼────────────────────────────┼──────────────────┼──────────────────────────────────────┼────────────────────────────────────────────────────┤
+│ 2   │ igl_tranche_tranche_id_seq │ sequence advance │ M                                    │ preAllocateTrancheIds :837                         │
+├─────┼────────────────────────────┼──────────────────┼──────────────────────────────────────┼────────────────────────────────────────────────────┤
+│ 3   │ igl_txn_bridge_to_journal  │ INSERT           │ M (one multi-row stmt)               │ insertBridgeBatch :856                             │
+├─────┼────────────────────────────┼──────────────────┼──────────────────────────────────────┼────────────────────────────────────────────────────┤
+│ 4   │ igl_tranche                │ INSERT           │ M (JDBC batch)                       │ insertTranchesBatch :879                           │
+├─────┼────────────────────────────┼──────────────────┼──────────────────────────────────────┼────────────────────────────────────────────────────┤
+│ 5   │ igl_posting_journal        │ INSERT           │ P + (1 if P>0)                       │ insertPostingJournalBatch :902                     │
+├─────┼────────────────────────────┼──────────────────┼──────────────────────────────────────┼────────────────────────────────────────────────────┤
+│ 6   │ igl_tranche_psn            │ UPSERT           │ M × psn codes                        │ trancheRepository.upsertTrancheExtendedParams :283 │
+└─────┴────────────────────────────┴──────────────────┴──────────────────────────────────────┴────────────────────────────────────────────────────┘
+
+M = tranches in the request, P = those with authorizedAmount > 0.
+
+
+
+
+
+UpdateSubAccount RPC:
+
+---
+Tables impacted
+
+Written — all conditional
+
+┌─────┬─────────────────┬────────┬───────────────────────────────────────────────────────┬──────┬─────────────────────────────────────────────┐
+│  #  │      Table      │   Op   │                        Columns                        │ Rows │                  Condition                  │
+├─────┼─────────────────┼────────┼───────────────────────────────────────────────────────┼──────┼─────────────────────────────────────────────┤
+│ 1   │ igl_sub_acct    │ UPDATE │ curr_cd, sub_acct_cd, partition_num, updt_by, updt_dt │ 1    │ any of currency / purse / partition changed │
+├─────┼─────────────────┼────────┼───────────────────────────────────────────────────────┼──────┼─────────────────────────────────────────────┤
+│ 2   │ igl_tranche     │ UPDATE │ partition_num, updt_by, updt_dt, right_to_upd_key     │ M    │ only partition changed                      │
+├─────┼─────────────────┼────────┼───────────────────────────────────────────────────────┼──────┼─────────────────────────────────────────────┤
+│ 3   │ igl_tranche_psn │ UPDATE │ partition_num, updt_by, updt_dt                       │ M×   │ only partition changed                      │
+└─────┴─────────────────┴────────┴───────────────────────────────────────────────────────┴──────┴─────────────────────────────────────────────┘
+
+updateSubAccount (db-queries.yml:126) always sets all three columns even when only one changed — unchanged ones are rewritten with their current values. Matched on sub_acct_id + partition_num (old partition).
+
+Steps 2-3 are one multi-statement batch (updateTranchesByTrancheId, :597) via trancheRepository.updateTranchesPartitionBatch — the same statement the account-update flow uses.
+
+
+Read
+
+┌─────────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                Table                │                                                    Purpose                                                    │
+├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ igl_acct_ref                        │ CTE in subAccountValidationQuery (:66) — resolves the account's partition from cardHolderAccountId            │
+├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ igl_sub_acct                        │ main row, plus a correlated subquery counting other live sub-accounts on the same account holding the new     │
+│                                     │ sub_acct_cd → duplicatePurseCount                                                                             │
+├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ igl_acct                            │ joined on acct_id and partition_num → acctPartitionNumber                                                     │
+├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ igl_tranche +                       │ fetchTranchesQuery (:102), INNER JOIN                                                                         │
+│ igl_txn_bridge_to_journal           │                                                                                                               │
+├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ igl_memo_journal                    │ EXISTS subquery → has_memo_hold — computed but never read on this path                                        │
+├─────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ igl_sub_acct_cd (ref)               │ purse code → sub_acct_cd, on Redis miss                                                                       │
+└─────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+DeleteSubAccount RPC:
+
+
+
+
+Execution order
+
+1. getSubAccountDetails(subAccountId, cardHolderAccountId)        :1402
+     ├─ fetchSubAccountBySubAccountId  (igl_acct_ref CTE → igl_sub_acct)
+     └─ loadTranchesBySubAccountId     (fetchTranchesQuery)
+   guard: subAccountId <= 0  → CARD_HOLDER_ACCOUNT_ID_SUB_ACCOUNT_DETAILS_NOT_FOUND
+        ↓
+2. MEMO-HOLD GUARD                                                :1413
+   collect tranche ids where has_memo_hold
+   if any → RequestValidationException(LEDGER_INVALID_TRANCHE_DELETION_REQUEST)
+        ↓
+3. softDeleteSubAccount   → UPDATE igl_sub_acct                   :1426
+        ↓
+4. regenerate right_to_upd_key per tranche                        :1433-1437
+   deleteTranchesBatch    → UPDATE igl_tranche + igl_txn_bridge_to_journal   :1439
+        ↓
+5. getOdsDeleteEventsForSubAccount → mutate DTOs, build 3 ODS events        :1443
+
+The read in step 1 precedes every write, and subAccountDTO.getPartitionNumber() is used for both the tranche load and the delete WHERE — so the partition ordering is correct here, same as account delete and unlike the account-update flow.
+
+---
+Tables impacted
+
+Written
+
+┌─────┬───────────────────────────┬────────┬─────────────────────────────────────────────────────┬──────┬────────────────────────────────────────────┐
+│  #  │           Table           │   Op   │                       Columns                       │ Rows │                 Statement                  │
+├─────┼───────────────────────────┼────────┼─────────────────────────────────────────────────────┼──────┼────────────────────────────────────────────┤
+│ 1   │ igl_sub_acct              │ UPDATE │ is_soft_del = 1, updt_by, updt_dt                   │ 1    │ fetchDeleteSubAccount (db-queries.yml:992) │
+├─────┼───────────────────────────┼────────┼─────────────────────────────────────────────────────┼──────┼────────────────────────────────────────────┤
+│ 2   │ igl_tranche               │ UPDATE │ is_soft_del = 1, updt_by, updt_dt, right_to_upd_key │ M    │ deleteTranchesAndBridgeReferences (:168)   │
+├─────┼───────────────────────────┼────────┼─────────────────────────────────────────────────────┼──────┼────────────────────────────────────────────┤
+│ 3   │ igl_txn_bridge_to_journal │ UPDATE │ is_soft_del = 1, updt_by, updt_dt                   │ M    │ same statement, 2nd half                   │
+└─────┴───────────────────────────┴────────┴─────────────────────────────────────────────────────┴──────┴────────────────────────────────────────────┘
+
+Step 1 matches on sub_acct_id + partition_num + is_soft_del = 0 — so a repeat delete is a 0-row no-op that still returns success. Steps 2-3 are one JDBC batch, the bridge row matched on acct_id = trancheId AND acct_typ_cd = FUNDING_CD.
+
+Read
+
+┌─────────────────────────────────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                  Table                  │                                                 Purpose                                                 │
+├─────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ igl_acct_ref                            │ CTE in fetchSubAccountBySubAccountId (:963) — resolves acct_id + partition_num from cardHolderAccountId │
+├─────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ igl_sub_acct                            │ the target row, joined to that partition                                                                │
+├─────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ igl_tranche + igl_txn_bridge_to_journal │ fetchTranchesQuery (:102), INNER JOIN                                                                   │
+├─────────────────────────────────────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ igl_memo_journal                        │ EXISTS subquery → has_memo_hold, which is load-bearing here                                             │
+└─────────────────────────────────────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+All four sub-account RPCs
+
+┌───────────────────────────┬─────────────────────────────────┬─────────────────────────────┬─────────────────────┐
+│                           │             Create              │           Update            │       Delete        │
+├───────────────────────────┼─────────────────────────────────┼─────────────────────────────┼─────────────────────┤
+│ igl_sub_acct              │ INSERT 1 (or 0)                 │ UPDATE 1 (or 0)             │ UPDATE 1 (soft del) │
+├───────────────────────────┼─────────────────────────────────┼─────────────────────────────┼─────────────────────┤
+│ igl_tranche               │ INSERT M                        │ unreachable                 │ UPDATE M (soft del) │
+├───────────────────────────┼─────────────────────────────────┼─────────────────────────────┼─────────────────────┤
+│ igl_tranche_psn           │ UPSERT                          │ unreachable                 │ not touched         │
+├───────────────────────────┼─────────────────────────────────┼─────────────────────────────┼─────────────────────┤
+│ igl_txn_bridge_to_journal │ INSERT M                        │ read only                   │ UPDATE M (soft del) │
+├───────────────────────────┼─────────────────────────────────┼─────────────────────────────┼─────────────────────┤
+│ igl_posting_journal       │ INSERT P+1                      │ —                           │ —                   │
+├───────────────────────────┼─────────────────────────────────┼─────────────────────────────┼─────────────────────┤
+│ Business events           │ 4 + N funding                   │ 4                           │ 4                   │
+├───────────────────────────┼─────────────────────────────────┼─────────────────────────────┼─────────────────────┤
+│ ODS events                │ 4 (or 3)                        │ 0-2                         │ 3                   │
+├───────────────────────────┼─────────────────────────────────┼─────────────────────────────┼─────────────────────┤
+│ STIP cache event          │ yes                             │ no                          │ no                  │
+├───────────────────────────┼─────────────────────────────────┼─────────────────────────────┼─────────────────────┤
+│ Guard                     │ duplicate purse / tranche dates │ partition + duplicate purse │ memo hold           │
+└───────────────────────────┴─────────────────────────────────┴─────────────────────────────┴─────────────────────┘
+
+
+
+
+
+
+
+CreateTranche RPC:
+
+
+
+Tables impacted
+
+Written
+
+┌─────┬────────────────────────────┬─────────────────┬──────────────┬─────────────────────────────────────────────────────────────────────────────────┐
+│  #  │           Table            │       Op        │     Rows     │                                      Where                                      │
+├─────┼────────────────────────────┼─────────────────┼──────────────┼─────────────────────────────────────────────────────────────────────────────────┤
+│ 1   │ igl_tranche_tranche_id_seq │ sequence        │ 1            │ selectNextTrancheId (TrancheRepository:104) → SELECT NEXT VALUE FOR …           │
+│     │                            │ advance         │              │                                                                                 │
+├─────┼────────────────────────────┼─────────────────┼──────────────┼─────────────────────────────────────────────────────────────────────────────────┤
+│ 2   │ igl_tranche                │ INSERT          │ 1            │ trancheRepository.save (:122) → insertTrancheRecord                             │
+├─────┼────────────────────────────┼─────────────────┼──────────────┼─────────────────────────────────────────────────────────────────────────────────┤
+│ 3   │ igl_txn_bridge_to_journal  │ INSERT          │ 1            │ transactionAccountRepository.save (:38) → insertBridgeToJournal                 │
+│     │                            │                 │              │ (db-queries.yml:767)                                                            │
+├─────┼────────────────────────────┼─────────────────┼──────────────┼─────────────────────────────────────────────────────────────────────────────────┤
+│ 4   │ igl_posting_journal        │ INSERT          │ 2            │ postingJournalRepository.saveAll (:61) — only if authorizedAmount > 0           │
+├─────┼────────────────────────────┼─────────────────┼──────────────┼─────────────────────────────────────────────────────────────────────────────────┤
+│ 5   │ igl_tranche_psn            │ UPSERT          │ 1 × psn      │ upsertTrancheExtendedParams (:284)                                              │
+│     │                            │                 │ codes        │                                                                                 │
+└─────┴────────────────────────────┴─────────────────┴──────────────┴─────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+Read
+
+┌────────────────────────────────────────────────────────────────┬────────────────────────────────────────────────────────────────────────────────────┐
+│                             Table                              │                                      Purpose                                       │
+├────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────┤
+│ igl_acct_ref, igl_acct, igl_sub_acct, igl_tranche +            │ findByAccountExtRefIdAndIsDeletedFalse (:167) loads the whole aggregate — account, │
+│ igl_txn_bridge_to_journal, igl_memo_journal                    │  ref, all sub-accounts, all their tranches                                         │
+├────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────┤
+│ igl_sub_acct_cd (ref)                                          │ purse code → sub_acct_cd (:190)                                                    │
+├────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────┤
+│ igl_business_check_config                                      │ RULE_FUNDING_MAX_AMOUNT for the funding-limit check (:301)                         │
+├────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────────┤
+│ igl_sttlmt_party + igl_swp_acct                                │ sweep account id (:366) — only on the funded path                                  │
+└────────────────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+---
+Compared to the other create flows
+
+┌───────────────────────────┬──────────────────────────┬───────────────────────────────┬────────────────────────────────────┐
+│                           │      Account create      │      Sub-account create       │           Tranche create           │
+├───────────────────────────┼──────────────────────────┼───────────────────────────────┼────────────────────────────────────┤
+│ igl_acct / igl_acct_ref   │ INSERT                   │ —                             │ —                                  │
+├───────────────────────────┼──────────────────────────┼───────────────────────────────┼────────────────────────────────────┤
+│ igl_sub_acct              │ INSERT N                 │ INSERT 1 (or 0)               │ —                                  │
+├───────────────────────────┼──────────────────────────┼───────────────────────────────┼────────────────────────────────────┤
+│ igl_tranche               │ INSERT M (batch)         │ INSERT M (batch)              │ INSERT 1                           │
+├───────────────────────────┼──────────────────────────┼───────────────────────────────┼────────────────────────────────────┤
+│ igl_txn_bridge_to_journal │ INSERT M                 │ INSERT M                      │ INSERT 1                           │
+├───────────────────────────┼──────────────────────────┼───────────────────────────────┼────────────────────────────────────┤
+│ igl_posting_journal       │ P + C                    │ P + 1                         │ 0 or 2                             │
+├───────────────────────────┼──────────────────────────┼───────────────────────────────┼────────────────────────────────────┤
+│ igl_tranche_psn           │ UPSERT                   │ UPSERT                        │ UPSERT                             │
+├───────────────────────────┼──────────────────────────┼───────────────────────────────┼────────────────────────────────────┤
+│ ID strategy               │ pre-allocate N, backfill │ pre-allocate M, backfill      │ allocate 1 up front                │
+├───────────────────────────┼──────────────────────────┼───────────────────────────────┼────────────────────────────────────┤
+│ ODS events                │ 6, all from controller   │ 4 (or 3), all from controller │ 3 (or 2), split service/controller │
+├───────────────────────────┼──────────────────────────┼───────────────────────────────┼────────────────────────────────────┤
+│ STIP cache event          │ yes                      │ yes                           │ yes                                │
+└───────────────────────────┴──────────────────────────┴───────────────────────────────────────┘
+
+
+
+
+UpdateTranche RPC:
+
+
+---
+Execution order
+
+1. findByTrancheIdAndIsDeletedFalse(trancheId, cardHolderAccountId)   :472
+   → selectTrancheById: partition resolved from igl_acct_ref, joins bridge + memo EXISTS
+   empty → ResourceNotFoundException(CARD_HOLDER_ACCOUNT_ID_TRANCHE_NOT_FOUND)
+        ↓
+2. OPTIMISTIC LOCK CHECK — in Java                                   :478
+   existing.rightToUpdateKey == request.tranche.journalRightToUpdateKey
+   mismatch → StateChangedException(RIGHT_TO_UPDATE_KEY_VALUE_MISMATCH)
+        ↓
+3. parse new expiry as UTC                                           :485
+        ↓
+4. validateExpiry: newExpiry > max(effectiveDate, now)                :492
+   fails → RequestValidationException(LEDGER_INVALID_TRANCHE_EXPIRY_DATE)
+        ↓
+5. updateTrancheExpiryDate → UPDATE igl_tranche                      :493
+   0 rows → RequestValidationException(TRANCHE_UPDATE_INVALID_EXPIRY_DATE)
+        ↓
+6. build response + 2 ODS events (tranche UPDATE, memo log INSERT)   :500-550
+
+---
+Tables impacted
+
+Written
+
+┌─────────────┬────────┬───────────────────────────────────┬──────┬─────────────────────────────────────────────┐
+│    Table    │   Op   │              Columns              │ Rows │                  Statement                  │
+├─────────────┼────────┼───────────────────────────────────┼──────┼─────────────────────────────────────────────┤
+│ igl_tranche │ UPDATE │ exp_dt, updt_dt, right_to_upd_key │ 1    │ updateTrancheExpiryDate (db-queries.yml:52) │
+└─────────────┴────────┴───────────────────────────────────┴──────┴─────────────────────────────────────────────┘
+
+That's the only write. Full SQL:
+
+UPDATE igl_tranche
+SET exp_dt = ?, updt_dt = ?, right_to_upd_key = ?
+WHERE tranche_id = ? AND is_soft_del = 0
+
+The new right_to_upd_key is recomputed in the repository (TrancheRepository:172-177), which mutates the passed-in DTO's updatedDate and expiryDate before hashing.
+
+Read
+
+┌───────────────────────────┬──────────────────────────────────────────────────────────────────────────────────┐
+│           Table           │                                     Purpose                                      │
+├───────────────────────────┼──────────────────────────────────────────────────────────────────────────────────┤
+│ igl_acct_ref              │ partition_cte in selectTrancheById — resolves partition from cardHolderAccountId │
+├───────────────────────────┼──────────────────────────────────────────────────────────────────────────────────┤
+│ igl_tranche               │ the target row                                                                   │
+├───────────────────────────┼──────────────────────────────────────────────────────────────────────────────────┤
+│ igl_txn_bridge_to_journal │ joined in selectTrancheById                                                      │
+├───────────────────────────┼──────────────────────────────────────────────────────────────────────────────────┤
+│ igl_memo_journal          │ EXISTS → has_memo_hold (computed, not checked on this path)                      │
+└───────────────────────────┴──────────────────────────────────────────────────────────────────────────────────┘
+
+Not written
+
+igl_tranche_psn (expiry doesn't affect cumulative params — correct), igl_sub_acct, igl_acct, igl_acct_ref, igl_posting_journal, igl_txn_bridge_to_journal. No reference-data lookups, no sweep account, no funding.
+
+Notably igl_memo_journal is not written either. The memoList from the request becomes a RECORD_MEMO_LOG ODS event only (:537-547) — it's never persisted in the ledger schema. The audit reason for the expiry change lives exclusively in ODS.
+
+
+
+
+
+
+DeleteTranche RPC:
+
+
+Execution order
+
+1. findByTrancheIdAndIsDeletedFalse(trancheId, cardHolderAccountId)   :597
+   → selectTrancheById (partition resolved from igl_acct_ref, joins bridge + memo EXISTS)
+   empty → ResourceNotFoundException(CARD_HOLDER_ACCOUNT_ID_TRANCHE_NOT_FOUND)
+        ↓
+2. MEMO-HOLD GUARD  tranche.isHasMemoHold()                           :604
+   → RequestValidationException(LEDGER_INVALID_TRANCHE_DELETION_REQUEST)
+        ↓
+3. OPTIMISTIC LOCK CHECK — in Java                                    :609
+   existing.rightToUpdateKey == request.journalRightToUpdateKey
+   → StateChangedException(RIGHT_TO_UPDATE_KEY_VALUE_MISMATCH)
+        ↓
+4. recompute hash from (updatedDate = now)                            :615-617
+   softDeleteTranche → UPDATE igl_txn_bridge_to_journal, then igl_tranche
+   rowsUpdated == 0 → ResourceNotFoundException(TRANCHE_NOT_FOUND)
+        ↓
+5. mutate DTO (softDel = true) + build 2 ODS events                   :624-661
+
+Note the guard ordering: memo hold is checked before the lock key. So a stale-key caller holding a memo-held tranche gets LEDGER_INVALID_TRANCHE_DELETION_REQUEST, not the mismatch error. Sub-account/account delete order it the same way (they have no key check at all), so this is consistent.
+
+---
+Tables impacted
+
+Written
+
+Both in a single multi-statement batch — softDeleteTranche (db-queries.yml:53):
+
+┌─────┬───────────────────────────┬────────┬─────────────────────────────────────────────────────┬──────┐
+│  #  │           Table           │   Op   │                       Columns                       │ Rows │
+├─────┼───────────────────────────┼────────┼─────────────────────────────────────────────────────┼──────┤
+│ 1   │ igl_txn_bridge_to_journal │ UPDATE │ is_soft_del = 1, updt_by, updt_dt                   │ 1    │
+├─────┼───────────────────────────┼────────┼─────────────────────────────────────────────────────┼──────┤
+│ 2   │ igl_tranche               │ UPDATE │ is_soft_del = 1, updt_by, updt_dt, right_to_upd_key │ 1    │
+└─────┴───────────────────────────┴────────┴─────────────────────────────────────────────────────┴──────┘
+
+DECLARE @RowsUpdated INT;
+UPDATE igl_txn_bridge_to_journal SET is_soft_del = 1, updt_by = :updatedBy, updt_dt = :updatedDate
+  WHERE acct_id = :trancheId AND acct_typ_cd = 1 AND is_soft_del = 0;
+UPDATE igl_tranche SET is_soft_del = 1, updt_by = :updatedBy, updt_dt = :updatedDate,
+  right_to_upd_key = :rightToUpdateKey
+  WHERE tranche_id = :trancheId AND is_soft_del = 0;
+SET @RowsUpdated = @@ROWCOUNT;
+SELECT @RowsUpdated AS RowsUpdated;
+
+Bridge first, tranche second; @@ROWCOUNT is captured after the tranche update, so the intent is clearly to report the tranche's row count. Unlike updateTrancheExpiryDate, this statement does set updt_by — good.
+
+Read
+
+┌───────────────────────────┬─────────────────────────────────────────────────────────────┐
+│           Table           │                           Purpose                           │
+├───────────────────────────┼─────────────────────────────────────────────────────────────┤
+│ igl_acct_ref              │ partition_cte — resolves partition from cardHolderAccountId │
+├───────────────────────────┼─────────────────────────────────────────────────────────────┤
+│ igl_tranche               │ the target row                                              │
+├───────────────────────────┼─────────────────────────────────────────────────────────────┤
+│ igl_txn_bridge_to_journal │ joined in selectTrancheById                                 │
+├───────────────────────────┼─────────────────────────────────────────────────────────────┤
+│ igl_memo_journal          │ EXISTS → has_memo_hold — load-bearing here                  │
+└───────────────────────────┴─────────────────────────────────────────────────────────────┘
+
+
+
+
+---
+All three tranche RPCs
+
+┌───────────────────────────┬───────────────────────────────────┬─────────────────┬───────────────────┐
+│                           │              Create               │     Update      │      Delete       │
+├───────────────────────────┼───────────────────────────────────┼─────────────────┼───────────────────┤
+│ igl_tranche               │ INSERT 1                          │ UPDATE (exp_dt) │ UPDATE (soft del) │
+├───────────────────────────┼───────────────────────────────────┼─────────────────┼───────────────────┤
+│ igl_txn_bridge_to_journal │ INSERT 1                          │ —               │ UPDATE (soft del) │
+├───────────────────────────┼───────────────────────────────────┼─────────────────┼───────────────────┤
+│ igl_posting_journal       │ 0 or 2                            │ —               │ —                 │
+├───────────────────────────┼───────────────────────────────────┼─────────────────┼───────────────────┤
+│ igl_tranche_psn           │ UPSERT                            │ —               │ not touched       │
+├───────────────────────────┼───────────────────────────────────┼─────────────────┼───────────────────┤
+│ updt_by written           │ yes                               │ no              │ yes               │
+├───────────────────────────┼───────────────────────────────────┼─────────────────┼───────────────────┤
+│ Optimistic lock           │ n/a                               │ required        │ required          │
+├───────────────────────────┼───────────────────────────────────┼─────────────────┼───────────────────┤
+│ Memo-hold guard           │ no                                │ no              │ yes               │
+├───────────────────────────┼───────────────────────────────────┼─────────────────┼───────────────────┤
+│ ODS events                │ 3 or 2 (split service/controller) │ 2               │ 2                 │
+├───────────────────────────┼───────────────────────────────────┼─────────────────┼───────────────────┤
+│ STIP cache event          │ yes                               │ no              │ no                │
+└───────────────────────────┴───────────────────────────────────┴─────────────────┴───────────────────┘
+
+
+
+Transaction Types RPC's:
+
+
+
+
+
+
+
+TransactionController.postTransaction (:184)          ← CompletableFuture.runAsync(taskExecutor)
+   └─ transactionServiceImpl.updateBalance (:145)      @Transactional  ← the tx boundary
+        └─ LedgerProcessorFactory.getUpdateBalanceLedgerProcessor(postingType)
+             └─ MemoTransactionPostingServiceImpl.updateBalance (:211)
+
+Strategy pattern. LedgerProcessorFactory (config/LedgerProcessorFactory.java) collects every Spring bean implementing LedgerBalancePostingService and, at @PostConstruct, maps them by getLedgerPostingType(). Lookup is postingType.toUpperCase(); an unmapped type → RequestValidationException(INVALID_POSTING_TYPE).
+
+Nine implementations share this one RPC:
+
+┌───────────────────────────────┬─────────────────────────────────────────────┐
+│          postingType          │                    Impl                     │
+├───────────────────────────────┼─────────────────────────────────────────────┤
+│ MEMO_POSTING                  │ MemoTransactionPostingServiceImpl           │
+├───────────────────────────────┼─────────────────────────────────────────────┤
+│ REVERSE_MEMO_POSTING          │ ReverseMemoTransactionPostingServiceImpl    │
+├───────────────────────────────┼─────────────────────────────────────────────┤
+│ JOURNAL_POSTING_DIRECT        │ JournalTransactionPostingServiceImpl        │
+├───────────────────────────────┼─────────────────────────────────────────────┤
+│ JOURNAL_POSTING_FROM_MEMO     │ ClearanceTransactionPostingServiceImpl      │
+├───────────────────────────────┼─────────────────────────────────────────────┤
+│ JOURNAL_POSTING_FULL_REVERSAL │ ReversalJournalByTransactionIdServiceImpl   │
+├───────────────────────────────┼─────────────────────────────────────────────┤
+│ REVERSE_JOURNAL_TO_MEMO       │ ReverseJournalToMemoPostingServiceImpl      │
+├───────────────────────────────┼─────────────────────────────────────────────┤
+│ REFUND_JOURNAL_POSTING        │ ReverseJournalTransactionPostingServiceImpl │
+├───────────────────────────────┼─────────────────────────────────────────────┤
+│ MANAGE_FUNDING                │ FundingServiceImpl                          │
+├───────────────────────────────┼─────────────────────────────────────────────┤
+│ ADJUSTMENT                    │ AdjustmentPostingServiceImpl                │
+└───────────────────────────────┴─────────────────────────────────────────────┘
+
+
+
+
+
+
+┌───────────┬───────────────┬─────────────────────────────────────────────────────────────────────────────┐
+│ forcePost │ reservedPurse │                                   Result                                    │
+├───────────┼───────────────┼─────────────────────────────────────────────────────────────────────────────┤
+│ false     │ false         │ ✅ normal — must have the funds                                             │
+├───────────┼───────────────┼─────────────────────────────────────────────────────────────────────────────┤
+│ true      │ false         │ ✅ overdraft rules                                                          │
+├───────────┼───────────────┼─────────────────────────────────────────────────────────────────────────────┤
+│ true      │ true          │ ✅ reserved-purse rules                                                     │
+├───────────┼───────────────┼─────────────────────────────────────────────────────────────────────────────┤
+│ false     │ true          │ ❌ rejected — LEDGER_INVALID_FORCE_POST_AND_RESERVED_PURSE_FLAG_COMBINATION │
+└───────────┴───────────────┴─────────────────────────────────────────────────────────────────────────────┘
+
+
+
+Example:
+
+Assume one tranche with open_to_buy = 1000, and this config in igl_business_check_config for the transaction's currency:
+
+RULE_OVERDRAFT_MAX_AMOUNT  = 500
+RULE_RESERVED_PURSE_LIMIT  = 300
+
+(All figures are plain longs — whatever minor unit the currency uses.)
+
+Case A — normal: forcePost = false, reservedPurse = false
+
+validateTrancheBalance: openToBuy < authorizedAmount → reject.
+
+┌──────────────────┬──────────────────┬─────────────────────────┐
+│ authorizedAmount │       Math       │         Outcome         │
+├──────────────────┼──────────────────┼─────────────────────────┤
+│ 800              │ 1000 < 800? no   │ ✅ pass → new OTB = 200 │
+├──────────────────┼──────────────────┼─────────────────────────┤
+│ 1200             │ 1000 < 1200? yes │ ❌ INSUFFICIENT_FUNDS   │
+└──────────────────┴──────────────────┴─────────────────────────┘
+
+You can spend down to zero, never past it.
+
+Case B — overdraft: forcePost = true, reservedPurse = false
+
+checkOverdraftLimit: maxPermissible = openToBuy + overdraftLimit = 1000 + 500 = 1500
+
+┌──────────────────┬──────────────────┬───────────────────────────────────────┐
+│ authorizedAmount │       Math       │                Outcome                │
+├──────────────────┼──────────────────┼───────────────────────────────────────┤
+│ 1200             │ 1200 > 1500? no  │ ✅ pass → new OTB = −200              │
+├──────────────────┼──────────────────┼───────────────────────────────────────┤
+│ 1400             │ 1400 > 1500? no  │ ✅ pass → new OTB = −400              │
+├──────────────────┼──────────────────┼───────────────────────────────────────┤
+│ 1600             │ 1600 > 1500? yes │ ❌ LEDGER_OVERDRAFT_VALIDATION_FAILED │
+└──────────────────┴──────────────────┴───────────────────────────────────────┘
+
+The 0 escape hatch: if RULE_OVERDRAFT_MAX_AMOUNT = 0, the condition is authorizedAmount > maxPermissible && overdraftLimit != 0 — the second clause is false, so the check is skipped and authorizedAmount = 999999 sails through. 0 configures unlimited, not no overdraft.
+
+Case C — reserved purse: forcePost = true, reservedPurse = true
+
+checkReservedPurseLimit: expectedOpenToBuy = openToBuy − authorizedAmount, reject if reservedPurseLimit < abs(expectedOpenToBuy)
+
+┌──────────────────┬─────────────┬────────────────┬────────────────────────────────────────────┐
+│ authorizedAmount │ expectedOTB │      Math      │                  Outcome                   │
+├──────────────────┼─────────────┼────────────────┼────────────────────────────────────────────┤
+│ 1200             │ −200        │ 300 < 200? no  │ ✅ pass → new OTB = −200                   │
+├──────────────────┼─────────────┼────────────────┼────────────────────────────────────────────┤
+│ 1400             │ −400        │ 300 < 400? yes │ ❌ LEDGER_RESERVED_PURSE_VALIDATION_FAILED │
+├──────────────────┼─────────────┼────────────────┼────────────────────────────────────────────┤
+│ 100              │ +900        │ 300 < 900? yes │ ❌ rejected — despite plenty of funds      │
+└──────────────────┴─────────────┴────────────────┴────────────────────────────────────────────┘
+
+igl_memo_journal   INSERT  txn_amt = 1200, memo_exp_dt = <requested expiry>,
+                           acct_id = <trancheId>, sub_acct_cd = <purse>
+igl_tranche        UPDATE  open_to_buy: 1000 → -200
+                           curr_bal:    unchanged        ← no real money moved
+                           right_to_upd_key: rehashed
+igl_tranche_psn    UPSERT  CUMM_AMT +0, cumulative_funding_amt +0,
+                           txn_count +1 (only if updateTxnCount = true)
+igl_posting_journal        ← nothing. No double entry until clearance.
+
+
+
+
+
+
+UpdateMemoJournal RPC:
+
+
+
+Execution order
+
+── CONTROLLER ─────────────────────────────────────────────
+1. publish LEDGER_UPDATE_MEMO_RECEIVED
+2. validateTransactionDetails
+   transactionAmount >= 0                → LEDGER_INVALID_TRANSACTION_AMOUNT
+   if tranches present:
+     aggregateTrancheAuthorizedAmounts == transaction amount
+                                          → checkTransactionAmountConsistency
+   expiry == null AND tranches empty     → INVALID_UPDATE_MEMO_JOURNAL_REQUEST
+3. publish LEDGER_UPDATE_MEMO_INITIATED
+── SERVICE (@Transactional) ───────────────────────────────
+4. memoJournalRepository.findByTransactionId(transaction.linkedTransactionId, now)
+     empty                → ResourceNotFoundException(LEDGER_INVALID_LINKED_TRANSACTION_ID)
+     count != tranches    → RequestValidationException(LEDGER_INVALID_LINKED_TRANSACTION_ID)
+5. validateForcePostAndReservedPurseFlag
+6. per tranche → processTrancheUpdate (:421)
+     ├─ validateRightToUpdateKey(memoEntry, tranche)   ← optimistic lock
+     ├─ currency must match memo's curr_cd            → LEDGER_INVALID_TRANSACTION_CURRENCY
+     ├─ resolve expiry / txnCode / amount (fall back to existing if absent)
+     ├─ recompute memo hash key
+     └─ CLASSIFY into one of three buckets  ← the core
+7. performConditionalBatchMemoUpdates (:699)  — fires only the non-empty buckets
+8. upsertTrancheExtendedParams  (igl_tranche_psn)
+9. build ODS events
+── CONTROLLER ─────────────────────────────────────────────
+10. publish LEDGER_UPDATE_MEMO_COMPLETED, onNext/onCompleted
+11. ODS events, then STIP cache refresh
+
+linkedTransactionId is the join key — you identify the hold you're amending by the original memo posting's transaction id, not by memo journal id.
+
+The three buckets — the heart of it
+
+
+
+processTrancheUpdate puts each tranche into one of three parameter lists, and performConditionalBatchMemoUpdates runs only the ones that got entries:
+
+┌─────────────────────────────────┬────────────────────────────┬────────────────────────────────┬────────────────────────────────────────────────────┐
+│            Condition            │           Bucket           │              SQL               │                       Effect                       │
+├─────────────────────────────────┼────────────────────────────┼────────────────────────────────┼────────────────────────────────────────────────────┤
+│ updateAuthorizedAmount and      │ memoAndTrancheParams       │ updateMemoAndTranche (:509)    │ UPDATE igl_memo_journal.txn_amt + UPDATE           │
+│ amount ≠ 0                      │                            │                                │ igl_tranche.open_to_buy                            │
+├─────────────────────────────────┼────────────────────────────┼────────────────────────────────┼────────────────────────────────────────────────────┤
+│ updateAuthorizedAmount and      │ deleteMemoAndUpdateTranche │ deleteMemoAndUpdateTranche     │ DELETE the memo row + UPDATE                       │
+│ amount = 0                      │                            │ (:531)                         │ igl_tranche.open_to_buy                            │
+├─────────────────────────────────┼────────────────────────────┼────────────────────────────────┼────────────────────────────────────────────────────┤
+│ expiry or txnCode supplied      │ memoParams                 │ updateMemoSql (:548)           │ UPDATE memo_exp_dt, txn_cd only                    │
+└─────────────────────────────────┴────────────────────────────┴────────────────────────────────┴────────────────────────────────────────────────────┘
+
+Buckets aren't exclusive — one tranche can land in both an amount bucket and the expiry bucket, producing two statements against the same memo row.
+
+
+
+
+┌──────────────────┬──────────────────────────────────────┬─────────────────────────────────────────┐
+│      Table       │                  Op                  │                  When                   │
+├──────────────────┼──────────────────────────────────────┼─────────────────────────────────────────┤
+│ igl_memo_journal │ UPDATE txn_amt                       │ amount changed, non-zero                │
+├──────────────────┼──────────────────────────────────────┼─────────────────────────────────────────┤
+│ igl_memo_journal │ DELETE                               │ amount set to 0                         │
+├──────────────────┼──────────────────────────────────────┼─────────────────────────────────────────┤
+│ igl_memo_journal │ UPDATE memo_exp_dt, txn_cd           │ expiry/code supplied                    │
+├──────────────────┼──────────────────────────────────────┼─────────────────────────────────────────┤
+│ igl_tranche      │ UPDATE open_to_buy, right_to_upd_key │ amount changed (either direction)       │
+├──────────────────┼──────────────────────────────────────┼─────────────────────────────────────────┤
+│ igl_tranche_psn  │ UPSERT                               │ always, via upsertTrancheExtendedParams │
+└──────────────────┴──────────────────────────────────────┴─────────────────────────────────────────┘
+
+
+
+
+Reverse Memo Posting:
+
+
+
+Execution order
+
+1. validatePostingRequest
+     validateReverseMemoRequest:
+       postingType == REVERSE_MEMO_POSTING     → INVALID_POSTING_TYPE
+       transactionId / transactionType present
+       linkedTransactionId present              → INVALID_LINKED_TRANSACTION_ID
+       transactionDateTime present + valid UTC
+       txnTypCd present AND matches the cached code for transactionType
+                                                → LEDGER_INVALID_TRANSACTION_TYP_COMBINATION
+     validateSubAccounts → per tranche:
+       trancheId > 0
+       memoRightToUpdateKey present             → MISSING_MEMO_RIGHT_TO_UPDATE_KEY
+       journalRightToUpdateKey present          → MISSING_RIGHT_TO_UPDATE_KEY
+        ↓
+2. publish LEDGER_REVERSAL_MEMO_INITIATED        ← inside the transaction
+        ↓
+3. flatten tranches; findDuplicateTrancheIds
+   aggregate amounts == transaction amount      → checkTransactionAmountConsistency
+        ↓
+4. findAllMemoByTransactionId(linkedTransactionId)
+     empty → ResourceNotFoundException(LEDGER_INVALID_LINKED_TRANSACTION_ID)
+        ↓
+5. THREE-WAY RECONCILIATION  ← the strict part
+     a) set(requestTrancheIds) == set(memoTrancheIds)   → INVALID_MEMO_ENTRY
+     b) per tranche: request amount == memo.txn_amt     → LEDGER_MEMO_REVERSAL_AMOUNT_MISMATCH
+     c) per tranche: memoRightToUpdateKey matches       → MEMO_KEY_MISMATCH
+        AND journalRightToUpdateKey matches             → RIGHT_TO_UPDATE_KEY_VALUE_MISMATCH
+        ↓
+6. buildReverseUpdateBatchParams — compute restored balances
+        ↓
+7. DELETE igl_memo_journal (by linkedTransactionId)
+   UPDATE igl_tranche + upsert igl_tranche_psn
+        ↓
+8. publish LEDGER_REVERSAL_MEMO_COMPLETED        ← inside the transaction
+
+The balance math
+
+ReverseMemoTransactionPostingServiceImpl:467-468 — the mirror image of memo posting:
+
+long newCurrentBalance = memoEntry.getCurrentBalance();                              // unchanged
+long newOpenToBuy      = memoEntry.getOpenToBuyBalance() + memoEntry.getTransactionAmount();  // restored
+
+Memo posting did OTB − amount; reversal does OTB + amount. curr_bal never moved in either direction, because no money ever changed hands.
+
+Crucially, the operands come from the memo journal snapshot, not from the request or a fresh tranche read — the memo row recorded the OTB at hold time, so the reversal restores to exactly that.
+
+Tables impacted
+
+┌──────────────────┬────────┬──────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────┐
+│      Table       │   Op   │               Rows               │                                     Notes                                     │
+├──────────────────┼────────┼──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+│ igl_memo_journal │ DELETE │ all rows for linkedTransactionId │ WHERE txn_id = ? AND is_soft_del = 0 — hard delete, one statement             │
+├──────────────────┼────────┼──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+│ igl_tranche      │ UPDATE │ N                                │ open_to_buy restored, right_to_upd_key rehashed; curr_bal rewritten unchanged │
+├──────────────────┼────────┼──────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+│ igl_tranche_psn  │ UPSERT │ N                                │ txn_count only if updateTxnCount                                              │
+└──────────────────┴────────┴──────────────────────────────────┴───────────────────────────────────────────────────────────────────────────────┘
+
+igl_posting_journal untouched. Reversing a hold isn't a money movement, so there's no double entry — the same reason memo posting doesn't write one.
+
+deleteMemoJournalByTransactionId (:564) checks the row count and throws ResourceNotFoundException(INVALID_MEMO_ENTRY) if zero — a real guard, unlike some of the row-count checks elsewhere in this codebase.
+
+
+
+
+
+Delete Expired Memo Journals:
+
+
+
+
+Two nice touches: the GROUP BY means a tranche with three expired memos gets one open_to_buy update with the summed amount rather than three; and the psn.tranche_psn_val >= agg.txn_count guard prevents txn_count going negative.
+
+Tables impacted
+
+┌──────────────────┬────────┬────────────────────────────────────────────────────────────┐
+│      Table       │   Op   │                           Scope                            │
+├──────────────────┼────────┼────────────────────────────────────────────────────────────┤
+│ igl_memo_journal │ DELETE │ every row with memo_exp_dt < cutoff — schema-wide          │
+├──────────────────┼────────┼────────────────────────────────────────────────────────────┤
+│ igl_tranche      │ UPDATE │ open_to_buy += summed amount; one row per affected tranche │
+├──────────────────┼────────┼────────────────────────────────────────────────────────────┤
+│ igl_tranche_psn  │ UPDATE │ cumm_amt -= amount; txn_count -= count if updateTxnCount   │
+└──────────────────┴────────┴────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+Journal Posting Direct RPC:
+
+
+
+Execution order
+
+1. validatePostingRequest
+     validatePostTransactionRequestAccounts (fromAccount, toAccount, postingType)
+     validateTransactionDetails
+     validateTransactionCode                    ← required, unlike memo's conditional check
+     RULE_TRANSACTION_MAX_AMOUNT → transactionLimit
+     validateSubAccounts(memberAccount, transactionLimit, false)
+     validateForcePostAndReservedPurseFlag
+        ↓
+2. getTranchesWithPurse → findDuplicateTrancheIds
+   aggregate amounts == transaction amount → checkTransactionAmountConsistency
+        ↓
+3. publish LEDGER_JOURNAL_POSTING_INITIATED            ← inside the transaction
+        ↓
+4. debitAmountFromTranches (:405)
+     a) fetchTrancheDetails(trancheIds, cardHolderAccountId)   ← one bulk read
+     b) BRANCH on forcePost:
+          forcePost  → handleForcedPostingTransaction
+          otherwise  → handlePostingTransaction
+     c) createSweepEntries        ← ONE consolidated sweep journal + unsettled row
+     d) generateAndAddOdsEvent    ← tranche ODS
+     e) updateTranceBalanceAndExtendedParam  → UPDATE igl_tranche + igl_tranche_psn
+        ↓
+5. postingJournalRepository.saveAll(postingJournals)   → INSERT igl_posting_journal, RETURNING ids
+6. unsettledTransactionRepository.saveAll(...)         → INSERT igl_unsttld_txn
+        ↓
+7. build ODS posting-journal event + memo-log events
+8. response LEDGER_TRANSACTION_POSTED
+
+
+
+
+Tables impacted
+
+┌─────────────────────┬────────┬─────────────────────────────────────────────┐
+│        Table        │   Op   │                    Rows                     │
+├─────────────────────┼────────┼─────────────────────────────────────────────┤
+│ igl_posting_journal │ INSERT │ N + 1 (N tranche debits + 1 sweep)          │
+├─────────────────────┼────────┼─────────────────────────────────────────────┤
+│ igl_unsttld_txn     │ INSERT │ 1 (consolidated)                            │
+├─────────────────────┼────────┼─────────────────────────────────────────────┤
+│ igl_tranche         │ UPDATE │ N — curr_bal, open_to_buy, right_to_upd_key │
+├─────────────────────┼────────┼─────────────────────────────────────────────┤
+│ igl_tranche_psn     │ UPSERT │ N — CUMM_AMT, txn_count if updateTxnCount   │
+└─────────────────────┴────────┴─────────────────────────────────────────────┘
+
+
+Worked example
+
+Transaction 300 across two tranches, forcePost = false, toAccount = sweep 9001.
+
+┌─────────┬──────────┬─────────────┬────────┐
+│ Tranche │ curr_bal │ open_to_buy │ amount │
+├─────────┼──────────┼─────────────┼────────┤
+│ T1      │ 1000     │ 800         │ 200    │
+├─────────┼──────────┼─────────────┼────────┤
+│ T2      │ 500      │ 500         │ 100    │
+└─────────┴──────────┴─────────────┴────────┘
+
+Sum 200 + 100 = 300 ✅ consistency passes. Balance checks: 800 ≥ 200 ✅, 500 ≥ 100 ✅.
+
+igl_tranche  T1   curr_bal: 1000 → 800    open_to_buy: 800 → 600
+igl_tranche  T2   curr_bal:  500 → 400    open_to_buy: 500 → 400
+
+igl_posting_journal   DEBIT  acct_id=T1    200   acct_cd=FUNDING_CD
+                      DEBIT  acct_id=T2    100   acct_cd=FUNDING_CD
+                      CREDIT acct_id=9001  300   acct_cd=SWEEP_CD   ← consolidated
+igl_unsttld_txn       1 consolidated row, 300
+igl_tranche_psn       CUMM_AMT +200 / +100, txn_count +1 each (if updateTxnCount)
+
+Note T1's open_to_buy drops by only 200 even though it already sat 200 below curr_bal — that pre-existing gap is an unrelated memo hold, and direct posting doesn't touch it.
+
+
+
+
+
+igl_posting_journal   N + 1 rows    N tranche debits + 1 sweep credit
+igl_unsttld_txn           1 row     sweep side only
+
+
+
+┌───────────┬─────────────────────────────────────────────────────────────┬──────────────────────────────┐
+│           │                sweep igl_posting_journal row                │     igl_unsttld_txn row      │
+├───────────┼─────────────────────────────────────────────────────────────┼──────────────────────────────┤
+│ account   │ acct_id = sweepAccountId                                    │ swp_acct_id = sweepAccountId │
+├───────────┼─────────────────────────────────────────────────────────────┼──────────────────────────────┤
+│ amount    │ txn_amt = abs(net)                                          │ txn_amt = abs(net)           │
+├───────────┼─────────────────────────────────────────────────────────────┼──────────────────────────────┤
+│ direction │ journal_cd — same value                                     │ journal_cd — same value      │
+├───────────┼─────────────────────────────────────────────────────────────┼──────────────────────────────┤
+│ also has  │ curr_cd, txn_typ_cd, txn_ref_id, txn_cd, acct_cd = SWEEP_CD │ nothing else                 │
+
+
+
+
+
+JOURNAL_POSTING FROM MEMO:
+
+
+
+Execution order
+
+1. validatePostingRequest
+     validateSubAccounts(memberAccount, transactionLimit, TRUE)  ← memo hash key REQUIRED here
+     validateTransactionDetails / validateTransactionCode
+     validateForcePostAndReservedPurseFlag
+        ↓
+2. getTranchesWithPurse → findDuplicateTrancheIds
+   aggregate == transaction amount → checkTransactionAmountConsistency
+        ↓
+3. publish LEDGER_JOURNAL_POSTING_FROM_MEMO_INITIATED    ← inside the transaction
+        ↓
+4. findByTransactionId(linkedTransactionId, now)  ← the memos being cleared
+     empty → ResourceNotFoundException(LEDGER_INVALID_LINKED_TRANSACTION_ID)
+   every request tranche must have a memo → else INVALID_TRANCHE
+        ↓
+5. memoToJournal (:438)
+     BRANCH forcePost:
+       true  → validateForcePostTranche  (reserved-purse or overdraft, DEBIT only)
+       false → validateTrancheBalance against memo.currentBalance
+     per tranche → updateBalancesAndCreateJournalEntries
+     updateTranceAndExtendedParam           → UPDATE igl_tranche + igl_tranche_psn
+     memoJournalRepository.deleteAllById    → DELETE igl_memo_journal
+     mergeSweepAndUnsettledTxns             → net + prune the sweep legs
+        ↓
+6. postingJournalRepository.saveAll     → INSERT igl_posting_journal
+   unsettledTransactionRepository.saveAll → INSERT igl_unsttld_txn
+        ↓
+7. publish LEDGER_JOURNAL_POSTING_FROM_MEMO_COMPLETED
+
+
+
+
+
+
+Tables impacted
+
+┌─────────────────────┬────────┬─────────────────────────────────────────────────────────────┐
+│        Table        │   Op   │                            Rows                             │
+├─────────────────────┼────────┼─────────────────────────────────────────────────────────────┤
+│ igl_memo_journal    │ DELETE │ all memos for the linked transaction, by id (deleteAllById) │
+├─────────────────────┼────────┼─────────────────────────────────────────────────────────────┤
+│ igl_tranche         │ UPDATE │ N — curr_bal, open_to_buy, right_to_upd_key                 │
+├─────────────────────┼────────┼─────────────────────────────────────────────────────────────┤
+│ igl_tranche_psn     │ UPSERT │ N                                                           │
+├─────────────────────┼────────┼─────────────────────────────────────────────────────────────┤
+│ igl_posting_journal │ INSERT │ N tranche legs + sweep leg(s) after merge                   │
+├─────────────────────┼────────┼─────────────────────────────────────────────────────────────┤
+│ igl_unsttld_txn     │ INSERT │ consolidated sweep row                                      │
+└─────────────────────┴────────┴─────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+Worked example
+
+Hold of 300 on T1 (curr_bal 1000, open_to_buy was 1000 → 700 after the hold).
+
+Clear for the full 300:
+curr_bal:     1000 → 700     (money actually leaves)
+open_to_buy:   700 → 700     (unchanged — hold consumed exactly)
+igl_memo_journal   row DELETED
+igl_posting_journal  DEBIT T1 300 + netted sweep leg
+
+Clear for 250 (merchant charged less):
+delta = 300 − 250 = +50
+curr_bal:     1000 → 750
+open_to_buy:   700 → 750     (unused 50 released)
+
+Clear for 350 (tip added), forcePost = false:
+delta = 300 − 350 = −50
+computedOpenToBuy = 700 − 50 = 650  ≥ 0 → allowed
+curr_bal:     1000 → 650
+open_to_buy:   700 → 650
+Had the tranche only had open_to_buy = 30, computedOpenToBuy = −20 → INSUFFICIENT_BALANCE, unless forcePost diverts to the overdraft/reserved-purse rules.
+
+Two things to note
+
+1. Partial clearance deletes the whole memo. deleteAllById removes every memo row for the linked transaction regardless of how much was actually cleared. So clearing 250 against a 300 hold releases the leftover 50 to open_to_buy and destroys the hold — there's no residual reservation. That's the usual card-network model (one auth, one clearing), but it means you cannot clear a hold twice, and a second clearance attempt fails at step 4 with LEDGER_INVALID_LINKED_TRANSACTION_ID. That doubles as the idempotency guard.
+
+2. The force-post validation only covers debits. validateForcePostTranche (:580) opens with if (tranche.getAuthorizedAmount() > 0) — so a zero or negative authorized amount skips the reserved-purse and overdraft checks entirely, even under forcePost. The balance math at :689 also skips its computedOpenToBuy < 0 guard whenever forcePost is true. Combined, a forcePost clearance with a non-positive amount passes through with no balance validation at all. Probably fine — a credit-direction clearance can't overdraw — but it's an asymmetry worth confirming against the intended semantics, since the equivalent non-force path does still run validateTrancheBalance.
+
+
+
+
+REFUND_JOURNAL_POSTING:
+
+
+Execution order
+
+1. validatePostingRequest
+     validatePostTransactionRequestAccounts
+     validateTransactionDetails / validateTransactionCode
+     transactionAmount > 0            → LEDGER_INVALID_TRANSACTION_AMOUNT   ← strictly positive
+     RULE_TRANSACTION_MAX_AMOUNT
+     validateSubAccounts(toAccount, transactionLimit)   ← 2-arg overload, no memo-hash flag
+        ↓
+2. getTranchesWithPurse(toAccount) → findDuplicateTrancheIds
+   aggregate == transaction amount → checkTransactionAmountConsistency
+        ↓
+3. publish LEDGER_REFUND_JOURNAL_POSTING_INITIATED     ← inside the transaction
+        ↓
+4. creditTrancheBalances (:408)
+     fetchTrancheDetails(trancheIds, cardHolderAccountId)
+     per tranche: exists? → validateRightToUpdateKeysForTranche
+                  → calculateUpdatedRevJournalBalance
+     updateTranceBalanceAndExtendedParam    → UPDATE igl_tranche + igl_tranche_psn
+     build sweep reversal journal + unsettled  (reversalFlow = TRUE)
+     build per-tranche reversal journal legs   (reversalFlow = TRUE)
+        ↓
+5. postingJournalRepository.saveAll      → INSERT igl_posting_journal
+   unsettledTransactionRepository.saveAll → INSERT igl_unsttld_txn
+        ↓
+6. response LEDGER_TRANSACTION_POSTED
+
+The balance math
+
+calculateUpdatedRevJournalBalance:540-541 — addition where direct posting subtracts:
+
+long newCurrentBalance = trancheDTO.getCurrentBalance() + tranche.getAuthorizedAmount();
+long newOpenToBuy      = trancheDTO.getOpenToBuy()      + tranche.getAuthorizedAmount();
+
+There is no balance check — no validateTrancheBalance, no overdraft or reserved-purse logic, and forcePost / reservedPurseEnabled are never consulted. Correct: crediting an account can't overdraw it. This is the only posting type in the family without those guards.
+
+Operands come from a fresh fetchTrancheDetails read, not from a memo snapshot — there's no memo involved.
+
+reversalFlow = true — how the direction flips
+
+All three journal builders are the same helpers used by direct posting, but with the last argument true (:481, :492, :502):
+
+if (!reversalFlow) journalCode = net >= 0 ? CREDIT : DEBIT;
+else               journalCode = net >= 0 ? DEBIT  : CREDIT;
+
+So for a positive refund amount the sweep leg becomes DEBIT (settlement party owes it back) and the tranche legs become CREDIT. Same Math.abs on the amount, same netting. And because createConsolidatedSweepUnsettledTransaction shares the identical logic, the igl_unsttld_txn row mirrors the sweep leg — one row, swp_acct_id = settlementAccId, DEBIT.
+
+Tables impacted
+
+┌─────────────────────┬────────┬─────────────────────────────────────────────────┐
+│        Table        │   Op   │                      Rows                       │
+├─────────────────────┼────────┼─────────────────────────────────────────────────┤
+│ igl_tranche         │ UPDATE │ N — curr_bal ↑, open_to_buy ↑, right_to_upd_key │
+├─────────────────────┼────────┼─────────────────────────────────────────────────┤
+│ igl_tranche_psn     │ UPSERT │ N                                               │
+├─────────────────────┼────────┼─────────────────────────────────────────────────┤
+│ igl_posting_journal │ INSERT │ N tranche CREDITs + 1 sweep DEBIT               │
+├─────────────────────┼────────┼─────────────────────────────────────────────────┤
+│ igl_unsttld_txn     │ INSERT │ 1 consolidated, DEBIT                           │
+└─────────────────────┴────────┴─────────────────────────────────────────────────┘
+
+
+Worked example
+
+Refund 300 across two tranches. Settlement account 9001 supplied as fromAccount; cardholder in toAccount.
+
+┌─────────┬──────────┬─────────────┬────────┐
+│ Tranche │ curr_bal │ open_to_buy │ refund │
+├─────────┼──────────┼─────────────┼────────┤
+│ T1      │ 700      │ 600         │ 200    │
+├─────────┼──────────┼─────────────┼────────┤
+│ T2      │ 400      │ 400         │ 100    │
+└─────────┴──────────┴─────────────┴────────┘
+
+igl_tranche  T1   curr_bal: 700 → 900    open_to_buy: 600 → 800
+igl_tranche  T2   curr_bal: 400 → 500    open_to_buy: 400 → 500
+
+igl_posting_journal   CREDIT acct_id=T1    200   acct_cd=FUNDING_CD
+                      CREDIT acct_id=T2    100   acct_cd=FUNDING_CD
+                      DEBIT  acct_id=9001  300   acct_cd=SWEEP_CD    ← netted, reversal direction
+igl_unsttld_txn       1 row, swp_acct_id=9001, DEBIT, 300
+
+
+
+
+
+
+
+JOURNAL_POSTING_FULL_REVERSAL:
+
+
+
+What it does
+
+Undoes a specific prior posting, verified against it. This is the "that charge shouldn't have happened" path. Like a refund it credits the tranches back, but unlike a refund it looks up the original posting journal rows by linkedTransactionId and validates the request against them before touching anything.
+
+That verification step is the whole reason this exists as a separate posting type from REFUND_JOURNAL_POSTING:
+
+┌────────────────────────────┬─────────────────────────────────┬──────────────────────────────────────────┐
+│                            │     REFUND_JOURNAL_POSTING      │      JOURNAL_POSTING_FULL_REVERSAL       │
+├────────────────────────────┼─────────────────────────────────┼──────────────────────────────────────────┤
+│ Reads the original posting │ no                              │ yes — getPostingJournalEntriesByTxnId    │
+├────────────────────────────┼─────────────────────────────────┼──────────────────────────────────────────┤
+│ Validates against it       │ none                            │ count, per-tranche presence, purse match │
+├────────────────────────────┼─────────────────────────────────┼──────────────────────────────────────────┤
+│ Amount                     │ whatever the caller says        │ still caller-supplied, but shape-checked │
+├────────────────────────────┼─────────────────────────────────┼──────────────────────────────────────────┤
+│ Use case                   │ merchant refunds part of a sale │ cancel a posting outright                │
+└────────────────────────────┴─────────────────────────────────┴──────────────────────────────────────────┘
+
+
+
+
+
+Execution order
+
+1. validatePostingRequest
+     validatePostTransactionRequest
+     validateTransactionDetails / validateTransactionCode
+     transactionAmount >= 0            → LEDGER_INVALID_TRANSACTION_AMOUNT   (note: >= not >)
+     RULE_TRANSACTION_MAX_AMOUNT → validateSubAccounts(toAccount, limit)
+     validateForcePostAndReservedPurseFlag
+        ↓
+2. getTranchesWithPurse(toAccount) → findDuplicateTrancheIds
+   aggregate == transaction amount   → checkTransactionAmountConsistency
+        ↓
+3. publish LEDGER_JOURNAL_POSTING_FULL_REVERSAL_INITIATED    ← inside the transaction
+        ↓
+4. getPostingJournalEntriesByTxnId(linkedTransactionId)      ← THE ORIGINAL POSTING
+        ↓
+5. validateJournalTrancheIntegrity  ← the distinguishing step
+        ↓
+6. updateTrancheBalances → credit back, UPDATE igl_tranche + igl_tranche_psn
+        ↓
+7. saveAll posting journals + unsettled transactions
+        ↓
+8. response LEDGER_TRANSACTION_POSTED
+
+
+
+Tables impacted
+
+┌─────────────────────┬────────┬─────────────────────────────────────────────────┐
+│        Table        │   Op   │                      Rows                       │
+├─────────────────────┼────────┼─────────────────────────────────────────────────┤
+│ igl_tranche         │ UPDATE │ N — curr_bal ↑, open_to_buy ↑, right_to_upd_key │
+├─────────────────────┼────────┼─────────────────────────────────────────────────┤
+│ igl_tranche_psn     │ UPSERT │ N                                               │
+├─────────────────────┼────────┼─────────────────────────────────────────────────┤
+│ igl_posting_journal │ INSERT │ N tranche CREDITs + 1 sweep DEBIT               │
+├─────────────────────┼────────┼─────────────────────────────────────────────────┤
+│ igl_unsttld_txn     │ INSERT │ 1 consolidated, DEBIT                           │
+└─────────────────────┴────────┴─────────────────────────────────────────────────┘
+
+
+
+
+JOURNAL_TO_MEMO RPC FLOW:
+
+
+
+
+What it does
+
+Un-settles a posting back into a hold. The money returns to curr_bal, but instead of becoming spendable it is immediately re-reserved as a fresh memo. Net effect for the cardholder: the charge is undone, but the funds stay locked.
+
+It's the exact inverse of clearance (JOURNAL_POSTING_FROM_MEMO), which walks the memo → journal direction. This one walks journal → memo.
+
+
+
+
+
+
+Tables impacted
+
+This is the only posting type that writes all four tables:
+
+┌─────────────────────┬────────┬───────────────────────────────────┐
+│        Table        │   Op   │               Rows                │
+├─────────────────────┼────────┼───────────────────────────────────┤
+│ igl_posting_journal │ INSERT │ N tranche CREDITs + 1 sweep DEBIT │
+├─────────────────────┼────────┼───────────────────────────────────┤
+│ igl_memo_journal    │ INSERT │ N — brand new holds               │
+├─────────────────────┼────────┼───────────────────────────────────┤
+│ igl_unsttld_txn     │ INSERT │ 1 consolidated, DEBIT             │
+├─────────────────────┼────────┼───────────────────────────────────┤
+│ igl_tranche         │ UPDATE │ N — curr_bal ↑ only               │
+├─────────────────────┼────────┼───────────────────────────────────┤
+│ igl_tranche_psn     │ UPSERT │ N                                 │
+└─────────────────────┴────────┴───────────────────────────────────┘
+
+
+
+Execution order
+
+1. validatePostingRequest  (accounts, transaction details, sub-accounts, tranche limits)
+        ↓
+2. MEMO EXPIRY WINDOW  ← borrowed wholesale from MEMO_POSTING
+     memoExpiryDateTime parsed as UTC
+     RULE_MAX_HOLD_DAYS → maxAllowedExpiry = now + maxHoldDays
+     expiry < now − 10s        → MEMO_EXPIRY_BEFORE_DATE_RANGE
+     expiry > maxAllowedExpiry → MEMO_EXPIRY_AFTER_DATE_RANGE
+        ↓
+3. getTranchesWithPurse(toAccount) → findDuplicateTrancheIds
+   aggregate == transaction amount → checkTransactionAmountConsistency
+        ↓
+4. publish LEDGER_REVERSE_JOURNAL_TO_MEMO_INITIATED     ← inside the transaction
+        ↓
+5. processJournalEntriesAndUpdateBalances (:362)
+     fetchTrancheMetadata(trancheIds, cardHolderAccountId)
+     build consolidated sweep journal + unsettled   (reversalFlow = TRUE)
+     per tranche:
+       tranche exists?            → INVALID_TRANCHE
+       validateRightToUpdateKeysForTranche
+       createMemoEntry            ← NEW hold
+       recalculateTrancheBalance  ← curr_bal ↑, OTB untouched
+       tranche CREDIT journal leg (reversalFlow = TRUE)
+     saveAll posting journals → INSERT igl_posting_journal
+     saveAll unsettled        → INSERT igl_unsttld_txn
+     insertMemoJournalAndReturnIds → INSERT igl_memo_journal
+     updateTranceBalanceAndExtendedParam → UPDATE igl_tranche + igl_tranche_psn
+        ↓
+6. publish LEDGER_REVERSE_JOURNAL_TO_MEMO_COMPLETED
+
+Tables impacted
+
+This is the only posting type that writes all four tables:
+
+┌─────────────────────┬────────┬───────────────────────────────────┐
+│        Table        │   Op   │               Rows                │
+├─────────────────────┼────────┼───────────────────────────────────┤
+│ igl_posting_journal │ INSERT │ N tranche CREDITs + 1 sweep DEBIT │
+├─────────────────────┼────────┼───────────────────────────────────┤
+│ igl_memo_journal    │ INSERT │ N — brand new holds               │
+├─────────────────────┼────────┼───────────────────────────────────┤
+│ igl_unsttld_txn     │ INSERT │ 1 consolidated, DEBIT             │
+├─────────────────────┼────────┼───────────────────────────────────┤
+│ igl_tranche         │ UPDATE │ N — curr_bal ↑ only               │
+├─────────────────────┼────────┼───────────────────────────────────┤
+│ igl_tranche_psn     │ UPSERT │ N                                 │
+└─────────────────────┴────────┴───────────────────────────────────┘
+
+Journal entries use reversalFlow = true, so tranche legs are CREDIT and the sweep leg is DEBIT — the mirror of the original posting.
+
+
+
+
+
+
+
+
+ADJUSTMENT RPC FLOW:
+
+
+
+
+Execution order
+
+1. validatePostingRequest  (accounts, tranches, sub-account, per-tranche amount limit)
+        ↓
+2. publish LEDGER_ADJUSTMENT_POSTING_INITIATED      ← inside the transaction
+        ↓
+3. extractTrancheWithPurse × 2   (credit from toAccount, debit from fromAccount)
+        ↓
+4. validateAndFetchTrancheBalances (:313)
+     findOpenToBuyAndCurrentBalanceByIdsAndPartitionNumber(debitId, creditId, bothCardholders)
+     debit tranche present?           → INVALID_TRANCHE
+     credit tranche present?          → INVALID_TRANCHE
+     validateRightToUpdateKeysForTranche  × 2  ← BOTH sides locked
+     amount > debit.openToBuy         → InsufficientFundsException(INSUFFICIENT_BALANCE)
+        ↓
+5. createAndSaveJournalEntries → INSERT igl_posting_journal (2 rows)
+        ↓
+6. updateCurrentAndOTBBalance  → UPDATE igl_tranche (2 rows)
+        ↓
+7. publish LEDGER_ADJUSTMENT_POSTING_COMPLETED
+
+The balance math
+
+buildTrancheBalanceDetails:448-449 — called twice with opposite signs (+trnAmount for credit, −trnAmount for debit, :390/:396):
+
+long currentBal  = trancheDTO.getCurrentBalance() + amount;
+long openToBuyBal = trancheDTO.getOpenToBuy()      + amount;
+
+Both balances move on both sides, in opposite directions:
+
+┌─────────────────────────────┬──────────┬─────────────┐
+│                             │ curr_bal │ open_to_buy │
+├─────────────────────────────┼──────────┼─────────────┤
+│ debit tranche (fromAccount) │ −amount  │ −amount     │
+├─────────────────────────────┼──────────┼─────────────┤
+│ credit tranche (toAccount)  │ +amount  │ +amount     │
+└─────────────────────────────┴──────────┴─────────────┘
+
+
+
+Tables impacted
+
+┌─────────────────────┬────────┬────────────────────────────────────────────────────┐
+│        Table        │   Op   │                        Rows                        │
+├─────────────────────┼────────┼────────────────────────────────────────────────────┤
+│ igl_posting_journal │ INSERT │ 2 — 1 DEBIT + 1 CREDIT, both acct_typ_cd = FUNDING │
+├─────────────────────┼────────┼────────────────────────────────────────────────────┤
+│ igl_tranche         │ UPDATE │ 2 — curr_bal, open_to_buy, right_to_upd_key        │
+└─────────────────────┴────────┴────────────────────────────────────────────────────┘
+
+
+
+FUNDING FLOW:
+
+
+
+
+Execution order (shared by both)
+
+1. validatePostingRequest
+        ↓
+2. resolvePostingRoute → tranche side, sweep side, sweepAccountId, FLOW
+        ↓
+3. findDuplicateTrancheIds
+   aggregate == transaction amount → checkTransactionAmountConsistency
+        ↓
+4. publish LEDGER_FUNDING_POSTING_INITIATED           ← inside the transaction
+        ↓
+5. fundTranchesAndReturnJournals
+     per tranche → updateBalancesAndCreateJournalEntriesDirectional  ← BRANCHES ON FLOW
+     createSweepEntries                                              ← BRANCHES ON FLOW
+     updateTrancheBalanceAndExtendedParam → UPDATE igl_tranche + igl_tranche_psn
+        ↓
+6. saveAll posting journals → INSERT igl_posting_journal
+        ↓
+7. if request.hasClearUnsettledTransaction():
+     handleClearUnsettledTransaction → deletes the named igl_unsttld_txn row
+        ↓
+8. publish LEDGER_FUNDING_POSTING_COMPLETED
+
+
+
+Side by side
+
+┌────────────────────────┬───────────┬────────────────────┐
+│                        │   FUND    │       DEFUND       │
+├────────────────────────┼───────────┼────────────────────┤
+│ Tranches on            │ toAccount │ fromAccount        │
+├────────────────────────┼───────────┼────────────────────┤
+│ curr_bal               │ ↑         │ ↓                  │
+├────────────────────────┼───────────┼────────────────────┤
+│ open_to_buy            │ ↑         │ ↓                  │
+├────────────────────────┼───────────┼────────────────────┤
+│ Tranche journal leg    │ CREDIT    │ DEBIT              │
+├────────────────────────┼───────────┼────────────────────┤
+│ Sweep journal leg      │ DEBIT     │ CREDIT             │
+├────────────────────────┼───────────┼────────────────────┤
+│ cumulative_funding_amt │ +amount   │ −amount            │
+├────────────────────────┼───────────┼────────────────────┤
+│ Balance guard          │ none      │ both must stay ≥ 0 │
+├────────────────────────┼───────────┼────────────────────┤
+│ reversalFlow arg       │ true      │ false              │
+└────────────────────────┴───────────┴────────────────────┘
+
+Tables impacted (both types)
+
+┌─────────────────────┬────────┬───────────────────────────────────────────────────┐
+│        Table        │   Op   │                       Rows                        │
+├─────────────────────┼────────┼───────────────────────────────────────────────────┤
+│ igl_posting_journal │ INSERT │ N tranche legs + 1 consolidated sweep leg         │
+├─────────────────────┼────────┼───────────────────────────────────────────────────┤
+│ igl_tranche         │ UPDATE │ N — curr_bal, open_to_buy, right_to_upd_key       │
+├─────────────────────┼────────┼───────────────────────────────────────────────────┤
+│ igl_tranche_psn     │ UPSERT │ N — including cumulative_funding_amt ±            │
+├─────────────────────┼────────┼───────────────────────────────────────────────────┤
+│ igl_unsttld_txn     │ DELETE │ 0 or 1 — only if clearUnsettledTransaction is set │
+└─────────────────────┴────────┴───────────────────────────────────────────────────┘
+
+
+
+Note the inversion versus every other posting type: funding is the only one that can remove a row from igl_unsttld_txn rather than insert one. The optional clearUnsettledTransaction block (:257-268) settles a previously-recorded obligation as part of the same transaction — that's how an unsettled amount from a direct posting gets closed out when the funds actually arrive.
+
+
+
+
+
+
+Create Single Journal Entry RPC FLow:
+
+
+What it does
+
+Writes exactly one row to igl_posting_journal and nothing else. No balance changes, no double entry, no sweep leg, no memo, no unsettled row. It's the escape hatch for recording a one-sided journal line against the sweep account.
+
+This is the odd one out of everything we've covered — every other flow in this service maintains balanced pairs and mutates tranche balances. This one is a pure insert.
+
+
+
+Execution order
+
+1. publish LEDGER_SINGLE_JOURNAL_ENTRY_REQUEST_RECEIVED
+        ↓
+2. validateCreateSingleJournalRequest (:243)
+        ↓
+3. publish LEDGER_SINGLE_JOURNAL_ENTRY_INITIATED
+        ↓
+4. processCreateSingleJournalEntry  @Transactional
+     buildPostingJournal → INSERT igl_posting_journal (1 row, RETURNING id)
+     publishToODS  ← ODS published from INSIDE the service
+        ↓
+5. publish LEDGER_SINGLE_JOURNAL_ENTRY_COMPLETED
+6. onNext / onCompleted
+
+
+
+┌──────────────────────┬─────────────┬─────────────────┐
+│         Flow         │ journal row │ tranche balance │
+├──────────────────────┼─────────────┼─────────────────┤
+│ direct posting       │ ✅          │ ✅              │
+├──────────────────────┼─────────────┼─────────────────┤
+│ refund / reversal    │ ✅          │ ✅              │
+├──────────────────────┼─────────────┼─────────────────┤
+│ funding / defunding  │ ✅          │ ✅              │
+├──────────────────────┼─────────────┼─────────────────┤
+│ adjustment           │ ✅          │ ✅              │
+├──────────────────────┼─────────────┼─────────────────┤
+│ single journal entry │ ✅          │ ❌              │
+└──────────────────────┴─────────────┴─────────────────┘
+
+
+
+Tables impacted
+
+┌─────────────────────┬────────┬──────┐
+│        Table        │   Op   │ Rows │
+├─────────────────────┼────────┼──────┤
+│ igl_posting_journal │ INSERT │ 1    │
+└─────────────────────┴────────┴──────┘
+
+
+
+
+
+Delete Unsettled Transactions RPC FLow:
+
+
+What it does
+
+Marks an outstanding obligation as settled, and books the offsetting journal line. Two steps, atomically:
+
+1. Soft-delete the igl_unsttld_txn row(s) — is_soft_del = 1
+2. Post a single journal entry in the opposite direction against the same sweep account
+
+So "delete" here means settle: the amount is no longer owed, and the ledger records the closing entry.
+
+Two RPCs, same idea
+
+┌──────────────────────┬──────────────────────────────────────┬─────────────────────────────────────────────────────┐
+│                      │      deleteUnSettledTransaction      │             deleteUnSettledTransactions             │
+├──────────────────────┼──────────────────────────────────────┼─────────────────────────────────────────────────────┤
+│ Input                │ one unsettledTxnId                   │ unsettledTxnIdsList                                 │
+├──────────────────────┼──────────────────────────────────────┼─────────────────────────────────────────────────────┤
+│ SQL                  │ deleteUnSettledTransactionsWithTxnId │ deleteUnSettledTransactionsWithTxnIds (batched)     │
+├──────────────────────┼──────────────────────────────────────┼─────────────────────────────────────────────────────┤
+│ Journal rows written │ 1                                    │ 1 — aggregated, not one per id                      │
+├──────────────────────┼──────────────────────────────────────┼─────────────────────────────────────────────────────┤
+│ Not found            │ ResourceNotFoundException            │ returns success, UNSETTLED_TXNS_ARE_ALREADY_SETTLED │
+└──────────────────────┴──────────────────────────────────────┴─────────────────────────────────────────────────────
+
+
+
+Tables impacted
+
+┌─────────────────────┬──────────────────────────┬────────────────────────────┐
+│        Table        │            Op            │            Rows            │
+├─────────────────────┼──────────────────────────┼────────────────────────────┤
+│ igl_unsttld_txn     │ UPDATE (is_soft_del = 1) │ 1, or N for the plural RPC │
+├─────────────────────┼──────────────────────────┼────────────────────────────┤
+│ igl_posting_journal │ INSERT                   │ 1 in both cases            │
+└─────────────────────┴──────────────────────────┴────────────────────────────┘
+
+
+
+
+
+
+
+
+Your unfair advantage
+
+You sit on top of a domain that's genuinely hard to fake: authorization lifecycle, ISO 8583, network clearing, ledgers, MCC/eligibility rules, disputes. Companies like Marqeta, Lithic, Highnote, Galileo, Stripe Issuing, Adyen, Zeta, M2P, Juspay, Razorpay, Nubank, Wise, Ramp, Brex hire directly against this. FAANG cares less about the domain and more about the systems rigor you demonstrate through it — so build projects that show both.
+
+Flagship project (pick one, go deep)
+
+A mini issuer processor. Not a toy — a real slice, end to end:
+
+- ISO 8583 codec (0100/0110 auth, 0120 advice, 0400/0410 reversal), field 55 EMV data parsing
+- Auth engine: balance check → rules → hold creation → response, with p99 latency budget under 100 ms (networks time out around 2–5s but real processors target ~50–150ms)
+- The hard parts that interviewers probe: partial auth, incremental auth (hotel/fuel), auth expiry/hold release, reversals arriving before the original, duplicate 0100s (idempotency), stand-in processing when core is down
+- Dual-message flow: match clearing records back to holds, handle over-capture and no-match
+- Load test it. Publish a chart: TPS vs p99, and what broke first.
+
+This single project covers distributed systems, idempotency, state machines, latency engineering, and money correctness. It is a 3–6 month evening project and it will out-signal ten weekend apps.
+
+Strong second choices
+
+┌───────────────────────────────────────────────────────────────────┬───────────────────────────────────────────────────────┬────────────────────────┐
+│                              Project                              │                    What it signals                    │    Who it impresses    │
+├───────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┼────────────────────────┤
+│ Double-entry ledger — immutable journal, exactly-once posting,    │ Correctness under concurrency; the #1 fintech infra   │ Stripe, Wise, Nubank,  │
+│ pending vs posted, reconciliation, sharding by account            │ interview topic                                       │ Ramp                   │
+├───────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┼────────────────────────┤
+│ Real-time eligibility/rules engine — DSL-driven, versioned rules, │ Directly your day job (benefit-card MCC/SKU           │ Marqeta, Lithic,       │
+│  shadow mode, sub-10ms eval                                       │ restriction, IIAS); shows hot-path optimization       │ healthcare fintech     │
+├───────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┼────────────────────────┤
+│ Settlement/recon pipeline — parse network clearing files, match   │ Data engineering + money accuracy; every processor    │ Everyone in payments   │
+│ against internal ledger, auto-classify breaks                     │ has this pain                                         │                        │
+├───────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┼────────────────────────┤
+│ Streaming fraud/velocity engine — Kafka/Flink, feature store with │ Real-time data infra, the most FAANG-transferable of  │ FAANG infra, Block,    │
+│  point-in-time correctness                                        │ the set                                               │ Coinbase               │
+├───────────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┼────────────────────────┤
+│ Token vault — PAN encryption with envelope keys + KMS, network    │ Security depth, rare and well-paid                    │ Anyone doing card      │
+│ token lifecycle, PCI scope reduction                              │                                                       │ storage                │
+└───────────────────────────────────────────────────────────────────┴───────────────────────────────────────────────────────┴────────────────────────┘
+
+Recommended combo: the mini issuer processor as flagship + the ledger as a component inside it. They compose naturally and give you one deep story instead of two shallow ones.
+
+What actually moves the needle beyond code
+
+1. Quantify your current job. "Built APIs" is invisible. "Reduced auth decline rate by X% by fixing partial-auth handling; cut p99 from 180ms to 60ms; handled N TPS peak during open enrollment" is a resume that gets shortlisted. Go dig up these numbers now — you can do this in a week and it beats any side project.
+2. Write. There is almost no good public content on ISO 8583, auth lifecycles, or issuer ledger design. Four solid blog posts on this makes you findable and makes recruiters and hiring managers reach out to you. This is the highest ROI-per-hour item on the whole list.
+3. Open source in the neighborhood — jPOS, Temporal, Kafka clients, ledger projects (TigerBeetle, Formance). Even a few merged fixes signal you can operate in someone else's large codebase.
+4. Don't skip the boring gate. For FAANG specifically, projects get you the interview; DSA and system design get you the offer. Budget most of your prep time there. For fintech, the domain interview weighs much heavier and your projects carry more.
+
+What not to do
+
+Avoid another "payment gateway clone with Stripe API," a crypto wallet, or a generic microservices demo. They read as tutorials. Also skip breadth — five half-finished repos read worse than one deep one with a real README, architecture diagram, benchmarks, and a section titled "what I got wrong the first time."
+
+---
+Want me to spec out the mini issuer processor properly — module breakdown, tech choices, milestone plan, and the specific edge cases to implement so it survives a hiring manager poking at it? I can also help you turn your current work into quantified resume bullets if you tell me what you own on the team.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
